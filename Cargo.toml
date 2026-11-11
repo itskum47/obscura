@@ -16,11 +16,14 @@ members = [
     "crates/obscura-worker",
     "crates/obscura-supervisor",
     "crates/obscura-agent",
+    "crates/obscura-control-plane",
+    "crates/obscura-scheduler",
+    "crates/obscura-worker-agent",
 ]
 exclude = ["vendor/taffy", "vendor/cosmic-text", "vendor/wreq-util"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/h4ckf0r0day/obscura"
@@ -39,6 +42,9 @@ obscura-isolation = { path = "crates/obscura-isolation" }
 obscura-worker = { path = "crates/obscura-worker" }
 obscura-supervisor = { path = "crates/obscura-supervisor" }
 obscura-agent = { path = "crates/obscura-agent" }
+obscura-control-plane = { path = "crates/obscura-control-plane" }
+obscura-scheduler = { path = "crates/obscura-scheduler" }
+obscura-worker-agent = { path = "crates/obscura-worker-agent" }
 
 html5ever = "0.39"
 markup5ever = "0.39"
