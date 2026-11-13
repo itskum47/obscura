@@ -136,8 +136,9 @@ async fn main() {
         .expect("consumer");
 
     tracing::info!(worker_id = %worker_id, "worker agent started");
-    let ms = obscura_telemetry::MetricsServer::new("0.0.0.0:9093", obscura_telemetry::global_metrics().clone());
-    let _keep = ms.spawn().await.ok();
+    let ms = obscura_telemetry::MetricsServer::from_env("0.0.0.0:9093", obscura_telemetry::global_metrics().clone())
+        .expect("metrics server configuration");
+    let _keep = ms.spawn().await.expect("metrics server bind");
 
     // Readiness/health endpoint.
     let nats_health = nats.clone();

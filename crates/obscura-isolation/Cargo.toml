@@ -1,6 +1,6 @@
 [package]
 name = "obscura-isolation"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 description = "Runtime isolation policies, security sandboxing, and resource quotas for Obscura Next"

@@ -40,8 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // readiness: simple log
     tracing::info!("obscura-scheduler ready");
-    let ms = obscura_telemetry::MetricsServer::new("0.0.0.0:9092", obscura_telemetry::global_metrics().clone());
-    let _keep = ms.spawn().await.ok();
+    let ms = obscura_telemetry::MetricsServer::from_env("0.0.0.0:9092", obscura_telemetry::global_metrics().clone())?;
+    let _keep = ms.spawn().await?;
     let health_listener = StdTcpListener::bind("0.0.0.0:8082")?;
     health_listener.set_nonblocking(true)?;
     let health_listener = tokio::net::TcpListener::from_std(health_listener)?;

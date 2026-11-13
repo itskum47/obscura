@@ -112,5 +112,5 @@ against the latest release or `main`.
 
 - `OBSCURA_SERVICE_BOOTSTRAP_SECRET` must be set to a non-empty, non-`testsecret` value of at least 32 bytes.
 - `OBSCURA_CDP_TOKEN` must be at least 32 bytes when CDP is exposed beyond loopback.
-- `OBSCURA_METRICS_TOKEN` optionally protects `/metrics`.
+- `OBSCURA_METRICS_TOKEN` must be set in production. All `/metrics` listeners fail closed without it. Local unauthenticated development requires explicit loopback binding with `OBSCURA_DEV_MODE=1`.
 - Never commit real secrets; use `.env.example`.

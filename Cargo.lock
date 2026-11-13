@@ -2534,7 +2534,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "obscura-dom",
  "obscura-telemetry",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-browser"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-cdp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-dom"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cssparser",
  "html5ever",
@@ -2653,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-isolation"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "obscura-ssrf",
  "serde",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-js"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "compression-codecs",
@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-render"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "base64",
@@ -2784,11 +2784,11 @@ dependencies = [
 
 [[package]]
 name = "obscura-ssrf"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "obscura-supervisor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "obscura-telemetry",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-telemetry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-worker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "obscura-agent",

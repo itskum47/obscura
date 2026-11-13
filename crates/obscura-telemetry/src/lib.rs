@@ -448,31 +448,185 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
+/// Authentication configuration for the metrics server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricsAuthConfig {
+    /// Token-based Bearer authentication mandatory for production and non-loopback exposure.
+    Token(String),
+    /// Explicit development mode permitting unauthenticated metrics, restricted to loopback interfaces.
+    DevelopmentUnauthenticated,
+}
+
+/// Errors occurring during metrics server configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricsConfigError {
+    MissingToken,
+    EmptyToken,
+    NonLoopbackUnauthenticated(String),
+    InvalidBindAddress(String),
+}
+
+impl std::fmt::Display for MetricsConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingToken => write!(
+                f,
+                "metrics authentication token is missing; set OBSCURA_METRICS_TOKEN or explicitly configure development mode"
+            ),
+            Self::EmptyToken => write!(f, "metrics authentication token cannot be empty"),
+            Self::NonLoopbackUnauthenticated(addr) => write!(
+                f,
+                "unauthenticated metrics are only permitted on loopback addresses (127.0.0.1, ::1, localhost), but bound to {}",
+                addr
+            ),
+            Self::InvalidBindAddress(addr) => write!(f, "invalid bind address: {}", addr),
+        }
+    }
+}
+
+impl std::error::Error for MetricsConfigError {}
+
+/// Configuration for the metrics server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsServerConfig {
+    pub bind_addr: String,
+    pub auth: MetricsAuthConfig,
+}
+
+/// Helper function to determine if a bind address resolves to loopback only.
+pub fn is_loopback(bind_addr: &str) -> bool {
+    if let Ok(sa) = bind_addr.parse::<SocketAddr>() {
+        return sa.ip().is_loopback();
+    }
+    let host = if let Some((h, _)) = bind_addr.rsplit_once(':') {
+        h.trim_matches(|c| c == '[' || c == ']')
+    } else {
+        bind_addr.trim_matches(|c| c == '[' || c == ']')
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    false
+}
+
+impl MetricsServerConfig {
+    /// Creates a production token-authenticated configuration.
+    pub fn new_token(bind_addr: impl Into<String>, token: impl Into<String>) -> Result<Self, MetricsConfigError> {
+        let bind_addr = bind_addr.into();
+        let token = token.into();
+        if token.trim().is_empty() {
+            return Err(MetricsConfigError::EmptyToken);
+        }
+        Ok(Self {
+            bind_addr,
+            auth: MetricsAuthConfig::Token(token),
+        })
+    }
+
+    /// Creates an explicit development unauthenticated configuration.
+    /// Fails closed if the bind address is not loopback.
+    pub fn new_development(bind_addr: impl Into<String>) -> Result<Self, MetricsConfigError> {
+        let bind_addr = bind_addr.into();
+        if !is_loopback(&bind_addr) {
+            return Err(MetricsConfigError::NonLoopbackUnauthenticated(bind_addr));
+        }
+        Ok(Self {
+            bind_addr,
+            auth: MetricsAuthConfig::DevelopmentUnauthenticated,
+        })
+    }
+
+    /// Loads configuration from environment variables with fail-closed semantics:
+    /// - `OBSCURA_METRICS_TOKEN`: if set and non-empty, uses `Token(token)`.
+    /// - If set and empty, returns `MetricsConfigError::EmptyToken`.
+    /// - If unset:
+    ///   - Checks `OBSCURA_DEV_MODE` or `OBSCURA_ALLOW_UNAUTHENTICATED_METRICS` (1/true).
+    ///   - If true and bind address is loopback, uses `DevelopmentUnauthenticated`.
+    ///   - If true and bind address is non-loopback, returns `MetricsConfigError::NonLoopbackUnauthenticated`.
+    ///   - If false, returns `MetricsConfigError::MissingToken`.
+    pub fn from_env(bind_addr: impl Into<String>) -> Result<Self, MetricsConfigError> {
+        let bind_addr = bind_addr.into();
+        match std::env::var("OBSCURA_METRICS_TOKEN") {
+            Ok(token) => {
+                if token.trim().is_empty() {
+                    Err(MetricsConfigError::EmptyToken)
+                } else {
+                    Ok(Self {
+                        bind_addr,
+                        auth: MetricsAuthConfig::Token(token),
+                    })
+                }
+            }
+            Err(_) => {
+                let dev_mode = std::env::var("OBSCURA_DEV_MODE")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+                    || std::env::var("OBSCURA_ALLOW_UNAUTHENTICATED_METRICS")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                if dev_mode {
+                    if !is_loopback(&bind_addr) {
+                        Err(MetricsConfigError::NonLoopbackUnauthenticated(bind_addr))
+                    } else {
+                        Ok(Self {
+                            bind_addr,
+                            auth: MetricsAuthConfig::DevelopmentUnauthenticated,
+                        })
+                    }
+                } else {
+                    Err(MetricsConfigError::MissingToken)
+                }
+            }
+        }
+    }
+}
+
 /// Lightweight HTTP server exposing Prometheus metrics and a health check endpoint.
 #[derive(Clone)]
 pub struct MetricsServer {
-    bind_addr: String,
+    config: MetricsServerConfig,
     registry: MetricsRegistry,
     started_at: Instant,
 }
 
 impl MetricsServer {
-    pub fn new(bind_addr: impl Into<String>, registry: MetricsRegistry) -> Self {
+    /// Creates a new `MetricsServer` with explicit configuration.
+    pub fn new(config: MetricsServerConfig, registry: MetricsRegistry) -> Self {
         Self {
-            bind_addr: bind_addr.into(),
+            config,
             registry,
             started_at: Instant::now(),
         }
     }
 
+    /// Creates a new `MetricsServer` using fail-closed configuration from environment variables.
+    pub fn from_env(bind_addr: impl Into<String>, registry: MetricsRegistry) -> Result<Self, MetricsConfigError> {
+        let config = MetricsServerConfig::from_env(bind_addr)?;
+        Ok(Self::new(config, registry))
+    }
+
+    /// Returns a reference to the server configuration.
+    pub fn config(&self) -> &MetricsServerConfig {
+        &self.config
+    }
+
+    /// Returns the configured bind address.
+    pub fn bind_addr(&self) -> &str {
+        &self.config.bind_addr
+    }
+
     /// Spawns the HTTP metrics server in a background Tokio task.
     /// Returns the local bound address and a cancellation trigger.
     pub async fn spawn(&self) -> std::io::Result<(SocketAddr, oneshot::Sender<()>)> {
-        let listener = TcpListener::bind(&self.bind_addr).await?;
+        let listener = TcpListener::bind(&self.config.bind_addr).await?;
         let local_addr = listener.local_addr()?;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
         let registry = self.registry.clone();
         let started_at = self.started_at;
+        let auth = self.config.auth.clone();
 
         tokio::spawn(async move {
             loop {
@@ -484,8 +638,9 @@ impl MetricsServer {
                         match accept_res {
                             Ok((stream, _)) => {
                                 let reg = registry.clone();
+                                let auth_cfg = auth.clone();
                                 tokio::spawn(async move {
-                                    handle_http_connection(stream, reg, started_at).await;
+                                    handle_http_connection(stream, reg, started_at, auth_cfg).await;
                                 });
                             }
                             Err(e) => {
@@ -505,6 +660,7 @@ async fn handle_http_connection(
     mut stream: TcpStream,
     registry: MetricsRegistry,
     started_at: Instant,
+    auth: MetricsAuthConfig,
 ) {
     let mut buf = [0u8; 2048];
     let n = match stream.read(&mut buf).await {
@@ -534,8 +690,8 @@ async fn handle_http_connection(
 
     match path {
         "/metrics" => {
-            if let Ok(expected) = std::env::var("OBSCURA_METRICS_TOKEN") {
-                if !expected.is_empty() {
+            match &auth {
+                MetricsAuthConfig::Token(expected) => {
                     let auth_header = req_str
                         .lines()
                         .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
@@ -558,6 +714,9 @@ async fn handle_http_connection(
                             .await;
                         return;
                     }
+                }
+                MetricsAuthConfig::DevelopmentUnauthenticated => {
+                    // Allowed explicitly for local development on loopback interfaces.
                 }
             }
             let body = registry.to_prometheus_text();
@@ -651,19 +810,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_metrics_server_endpoints() {
+    async fn test_metrics_auth_case1_missing_token() {
+        // Without token and without dev mode, configuration fails with MissingToken.
+        std::env::remove_var("OBSCURA_METRICS_TOKEN");
+        std::env::remove_var("OBSCURA_DEV_MODE");
+        std::env::remove_var("OBSCURA_ALLOW_UNAUTHENTICATED_METRICS");
+        let res = MetricsServerConfig::from_env("0.0.0.0:9091");
+        assert_eq!(res.unwrap_err(), MetricsConfigError::MissingToken);
+    }
+
+    #[test]
+    fn test_metrics_auth_case2_empty_token() {
+        // Empty or whitespace-only token fails with EmptyToken.
+        let res = MetricsServerConfig::new_token("127.0.0.1:0", "   ");
+        assert_eq!(res.unwrap_err(), MetricsConfigError::EmptyToken);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_auth_case3_valid_token() {
         let reg = MetricsRegistry::new();
         reg.counter("obscura_sessions_total").unwrap().inc_by(7);
-        reg.gauge("obscura_sessions_active").unwrap().set(3);
-        reg.gauge("obscura_worker_processes_count").unwrap().set(2);
-
-        let server = MetricsServer::new("127.0.0.1:0", reg);
+        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let server = MetricsServer::new(config, reg);
         let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
 
-        // Test /metrics
         let mut stream = TcpStream::connect(addr).await.expect("connect");
         stream
-            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer super-secret-token-123\r\n\r\n")
             .await
             .unwrap();
         let mut resp = String::new();
@@ -679,11 +852,153 @@ mod tests {
         }
         assert!(resp.contains("HTTP/1.1 200 OK"));
         assert!(resp.contains("obscura_sessions_total 7"));
+        let _ = shutdown_tx.send(());
+    }
 
-        // Test /health
+    #[tokio::test]
+    async fn test_metrics_auth_case4_missing_authorization_header() {
+        let reg = MetricsRegistry::new();
+        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let server = MetricsServer::new(config, reg);
+        let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
+
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(resp.contains("HTTP/1.1 401 Unauthorized"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_auth_case5_invalid_token() {
+        let reg = MetricsRegistry::new();
+        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let server = MetricsServer::new(config, reg);
+        let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
+
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrong-token\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(resp.contains("HTTP/1.1 401 Unauthorized"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_auth_case6_incorrect_bearer_scheme() {
+        let reg = MetricsRegistry::new();
+        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let server = MetricsServer::new(config, reg);
+        let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
+
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic c3VwZXItc2VjcmV0LXRva2VuLTEyMw==\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(resp.contains("HTTP/1.1 401 Unauthorized"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_auth_case7_development_mode() {
+        // Loopback development mode works without credentials.
+        let config = MetricsServerConfig::new_development("127.0.0.1:0").unwrap();
+        let reg = MetricsRegistry::new();
+        reg.counter("obscura_sessions_total").unwrap().inc();
+        let server = MetricsServer::new(config, reg);
+        let (addr, shutdown_tx) = server.spawn().await.expect("bind dev server");
+
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if resp.contains("obscura_sessions_total 1") {
+                break;
+            }
+        }
+        assert!(resp.contains("HTTP/1.1 200 OK"));
+        assert!(resp.contains("obscura_sessions_total 1"));
+        let _ = shutdown_tx.send(());
+
+        // Non-loopback in development mode is strictly prohibited.
+        let non_loopback = MetricsServerConfig::new_development("0.0.0.0:9091");
+        assert_eq!(
+            non_loopback.unwrap_err(),
+            MetricsConfigError::NonLoopbackUnauthenticated("0.0.0.0:9091".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_auth_case8_health_endpoints_unauthenticated() {
+        let reg = MetricsRegistry::new();
+        reg.gauge("obscura_sessions_active").unwrap().set(3);
+        reg.gauge("obscura_worker_processes_count").unwrap().set(2);
+
+        let config = MetricsServerConfig::new_token("127.0.0.1:0", "secret-token").unwrap();
+        let server = MetricsServer::new(config, reg);
+        let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
+
+        // /health without Authorization header returns 200 OK JSON
         let mut stream = TcpStream::connect(addr).await.expect("connect");
         stream
             .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = String::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stream.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            resp.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if resp.contains(r#""status":"healthy""#) {
+                break;
+            }
+        }
+        assert!(resp.contains("HTTP/1.1 200 OK"));
+        assert!(resp.contains(r#""status":"healthy""#));
+        assert!(resp.contains(r#""active_sessions":3"#));
+
+        // /healthz without Authorization header also returns 200 OK JSON
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .await
             .unwrap();
         let mut resp = String::new();
@@ -698,9 +1013,24 @@ mod tests {
         }
         assert!(resp.contains("HTTP/1.1 200 OK"));
         assert!(resp.contains(r#""status":"healthy""#));
-        assert!(resp.contains(r#""active_sessions":3"#));
 
         let _ = shutdown_tx.send(());
+    }
+
+    #[test]
+    fn test_metrics_auth_case9_all_listeners_effective_configuration() {
+        // Control-plane (0.0.0.0:9091), Scheduler (0.0.0.0:9092), Worker-agent (0.0.0.0:9093)
+        let endpoints = ["0.0.0.0:9091", "0.0.0.0:9092", "0.0.0.0:9093"];
+        for ep in endpoints {
+            // Must succeed with token
+            let cfg = MetricsServerConfig::new_token(ep, "token123").unwrap();
+            assert_eq!(cfg.bind_addr, ep);
+            assert_eq!(cfg.auth, MetricsAuthConfig::Token("token123".into()));
+
+            // Must reject unauthenticated development mode on 0.0.0.0
+            let dev_err = MetricsServerConfig::new_development(ep).unwrap_err();
+            assert_eq!(dev_err, MetricsConfigError::NonLoopbackUnauthenticated(ep.to_string()));
+        }
     }
 }
 

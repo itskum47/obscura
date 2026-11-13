@@ -516,10 +516,16 @@ impl StealthHttpClient {
                     let next_url = current_url.join(location_str).map_err(|e| {
                         ObscuraNetError::Network(format!("Invalid redirect URL: {}", e))
                     })?;
+                    if next_url.scheme() != "http" && next_url.scheme() != "https" {
+                        return Err(ObscuraNetError::Network(format!(
+                            "Redirect to non-HTTP/HTTPS scheme '{}' is prohibited",
+                            next_url.scheme()
+                        )));
+                    }
                     validate_url(
                         &next_url,
                         self.allow_private_network,
-                        self.allow_file_access,
+                        false,
                     )?;
                     validate_request_mode(&request, &next_url)?;
                     redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);

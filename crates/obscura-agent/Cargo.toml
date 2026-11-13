@@ -1,6 +1,6 @@
 [package]
 name = "obscura-agent"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 description = "Autonomous AI-agent browser action protocol and semantic DOM distillation for Obscura Next"

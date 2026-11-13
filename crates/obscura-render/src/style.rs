@@ -4176,6 +4176,9 @@ pub(crate) fn set_grid_calc_context(
 /// the Arc owners for the entire lifetime of every layout tree computation.
 #[allow(unsafe_code)]
 pub(crate) fn resolve_grid_calc(value: *const (), basis: f32) -> f32 {
+    if value.is_null() {
+        return 0.0;
+    }
     // SAFETY: upheld by `new_taffy_tree` and the Arc ownership documented on
     // `LayoutStyle::grid_calc_expressions`.
     let calc = unsafe { &*value.cast::<GridCalcExpression>() };

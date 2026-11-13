@@ -18,8 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::from_std(listener)?;
     tracing::info!("control-plane ready on 8081");
     let metrics = obscura_telemetry::global_metrics().clone();
-    let ms = MetricsServer::new("0.0.0.0:9091", metrics);
-    let _metrics_shutdown = ms.spawn().await.ok();
+    let ms = MetricsServer::from_env("0.0.0.0:9091", metrics)?;
+    let _metrics_shutdown = ms.spawn().await?;
     tracing::info!("metrics server started on 9091");
 
     let cp_health = cp.clone();

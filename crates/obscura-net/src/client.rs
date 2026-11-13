@@ -1700,10 +1700,16 @@ impl ObscuraHttpClient {
                     let next_url = current_url.join(location_str).map_err(|e| {
                         ObscuraNetError::Network(format!("Invalid redirect URL: {}", e))
                     })?;
+                    if next_url.scheme() != "http" && next_url.scheme() != "https" {
+                        return Err(ObscuraNetError::Network(format!(
+                            "Redirect to non-HTTP/HTTPS scheme '{}' is prohibited",
+                            next_url.scheme()
+                        )));
+                    }
                     validate_url(
                         &next_url,
                         self.allow_private_network,
-                        self.allow_file_access(),
+                        false,
                     )?;
                     validate_request_mode(&request, &next_url)?;
                     redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
@@ -3122,5 +3128,151 @@ mod file_access_tests {
         assert_eq!(client.fetch(&url).await.unwrap().body, b"local-secret");
         client.set_allow_file_access(false);
         assert!(client.fetch(&url).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod redirect_validation_tests {
+    use super::*;
+    use crate::cookies::CookieJar;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use url::Url;
+
+    #[tokio::test]
+    async fn redirect_to_file_scheme_is_rejected_even_with_allow_file_access() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: file:///etc/passwd\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        client.set_allow_file_access(true);
+
+        let url = Url::parse(&format!("http://{}/redirect", addr)).unwrap();
+        let err = client.fetch(&url).await.expect_err("redirect to file:// must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-HTTP/HTTPS") || msg.contains("file"),
+            "expected non-HTTP/HTTPS rejection, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_to_data_scheme_is_rejected() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: data:text/html,payload\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("http://{}/redirect-data", addr)).unwrap();
+        let err = client.fetch(&url).await.expect_err("redirect to data: must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-HTTP/HTTPS") || msg.contains("data"),
+            "expected non-HTTP/HTTPS rejection, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_to_javascript_scheme_is_rejected() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: javascript:alert(1)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("http://{}/redirect-js", addr)).unwrap();
+        let err = client.fetch(&url).await.expect_err("redirect to javascript: must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-HTTP/HTTPS") || msg.contains("javascript"),
+            "expected non-HTTP/HTTPS rejection, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_redirect_resolves_and_follows_http() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            // First hop: redirect to /target
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: /target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+            // Second hop: respond 200 OK
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("http://{}/start", addr)).unwrap();
+        let resp = client.fetch(&url).await.expect("relative redirect must succeed");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"success");
+        assert_eq!(resp.redirected_from.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_rejects_on_second_hop_to_file() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            // First hop: redirect to /hop2
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: /hop2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+            // Second hop: redirect to file:///etc/shadow
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = "HTTP/1.1 302 Found\r\nLocation: file:///etc/shadow\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        client.set_allow_file_access(true);
+        let url = Url::parse(&format!("http://{}/start", addr)).unwrap();
+        let err = client.fetch(&url).await.expect_err("redirect chain terminating in file:// must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-HTTP/HTTPS") || msg.contains("file"),
+            "expected non-HTTP/HTTPS rejection, got: {msg}"
+        );
     }
 }

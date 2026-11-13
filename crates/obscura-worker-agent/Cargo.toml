@@ -1,6 +1,6 @@
 [package]
 name = "obscura-worker-agent"
-version = "0.3.0"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 description = "Distributed worker agent bridging NATS dispatch to supervised browser workers"

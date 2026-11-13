@@ -1,6 +1,6 @@
 [package]
 name = "obscura-worker"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 description = "Independent runtime worker and session lifecycle manager for Obscura Next"
