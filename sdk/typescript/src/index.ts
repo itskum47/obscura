@@ -50,13 +50,16 @@ export class ObscuraClient {
   private defaultSessionId: string;
   private proc: ChildProcess | null = null;
   private rl: readline.Interface | null = null;
+  private pendingResolvers: Array<(value: unknown) => void> = [];
   private pendingResolvers: Map<string, (value: WorkerResponse) => void> = new Map();
   private reqCounter = 0;
 
-  constructor(binaryPath = 'obscura-runtime-worker', defaultSessionId?: string) {
-    this.binaryPath = resolveWorkerBinary(binaryPath);
-    this.defaultSessionId = defaultSessionId || `ts-session-${Date.now().toString(36)}`;
-  }
+  constructor(binaryPath = 'obscura') {
+    this.binaryPath = binaryPath;
+    constructor(binaryPath = 'obscura-runtime-worker', defaultSessionId ?: string) {
+      this.binaryPath = resolveWorkerBinary(binaryPath);
+      this.defaultSessionId = defaultSessionId || `ts-session-${Date.now().toString(36)}`;
+    }
 
   private nextId(): string {
     this.reqCounter++;
@@ -64,30 +67,37 @@ export class ObscuraClient {
   }
 
   public async start(): Promise<void> {
-    // Spawn worker binary directly — no subcommand needed
-    this.proc = spawn(this.binaryPath, [], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    this.proc = spawn(this.binaryPath, ['worker'], {
+      // Spawn worker binary directly — no subcommand needed
+      this.proc = spawn(this.binaryPath, [], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
 
-    if (!this.proc.stdout || !this.proc.stdin) {
+      if(!this.proc.stdout || !this.proc.stdin) {
       throw new Error('Failed to acquire worker stdio handles');
     }
 
     this.rl = readline.createInterface({ input: this.proc.stdout });
     this.rl.on('line', (line: string) => {
-      try {
-        const resp = JSON.parse(line) as WorkerResponse;
-        if (resp.id) {
-          const resolver = this.pendingResolvers.get(resp.id);
-          if (resolver) {
-            this.pendingResolvers.delete(resp.id);
-            resolver(resp);
+      const resolver = this.pendingResolvers.shift();
+      if (resolver) {
+        try {
+          resolver(JSON.parse(line));
+        } catch (e) {
+          resolver({ ok: false, error: String(e) });
+          try {
+            const resp = JSON.parse(line) as WorkerResponse;
+            if (resp.id) {
+              const resolver = this.pendingResolvers.get(resp.id);
+              if (resolver) {
+                this.pendingResolvers.delete(resp.id);
+                resolver(resp);
+              }
+            }
+          } catch {
+            // Malformed JSON — ignore
           }
-        }
-      } catch {
-        // Malformed JSON — ignore
-      }
-    });
+        });
 
     this.proc.on('exit', () => {
       // Fail all pending requests
@@ -98,11 +108,13 @@ export class ObscuraClient {
     });
   }
 
+  private sendCommand<T = unknown>(cmd: Record<string, unknown>): Promise<T> {
   private sendCommand<T = WorkerResponse>(cmd: Record<string, unknown>): Promise<T> {
     return new Promise((resolve, reject) => {
       if (!this.proc || !this.proc.stdin) {
         return reject(new Error('Worker not running'));
       }
+      this.pendingResolvers.push(resolve as (value: unknown) => void);
       const id = cmd.id as string || this.nextId();
       cmd.id = id;
       this.pendingResolvers.set(id, resolve as unknown as (value: WorkerResponse) => void);
@@ -110,6 +122,7 @@ export class ObscuraClient {
     });
   }
 
+  public async navigate(url: string, waitUntil: WaitUntil = 'load'): Promise<ActionResult> {
   public async ping(): Promise<WorkerResponse> {
     return this.sendCommand({ cmd: 'ping' });
   }
@@ -135,43 +148,54 @@ export class ObscuraClient {
   public async navigate(url: string, sessionId?: string, waitUntil: WaitUntil = 'load', timeoutMs?: number): Promise<ActionResult> {
     const sid = sessionId || this.defaultSessionId;
     const t0 = Date.now();
-    const cmd: Record<string, unknown> = {
+    const resp = await this.sendCommand<{ ok: boolean; result?: unknown; error?: string }>({
+      const cmd: Record<string, unknown> = {
       cmd: 'navigate',
       session_id: sid,
       url,
       waitUntil,
-    };
-    if (timeoutMs !== undefined) cmd.timeout_ms = timeoutMs;
-    const resp = await this.sendCommand<WorkerResponse>(cmd);
-    return {
-      action: 'navigate',
-      success: resp.ok,
-      payload: resp.result,
-      elapsedMs: Date.now() - t0,
-      error: resp.error ? resp.error.message : undefined,
-    };
+    });
+  };
+  if(timeoutMs !== undefined) cmd.timeout_ms = timeoutMs;
+const resp = await this.sendCommand<WorkerResponse>(cmd);
+return {
+  action: 'navigate',
+  success: resp.ok,
+  payload: resp.result,
+  elapsedMs: Date.now() - t0,
+  error: resp.error,
+  error: resp.error ? resp.error.message : undefined,
+};
   }
 
+  public async evaluate(expression: string): Promise < ActionResult > {
   public async evaluate(expression: string, sessionId?: string, awaitPromise = true, timeoutMs?: number): Promise<ActionResult> {
     const sid = sessionId || this.defaultSessionId;
     const t0 = Date.now();
-    const cmd: Record<string, unknown> = {
+    const resp = await this.sendCommand<{ ok: boolean; result?: unknown; error?: string }>({
+      const cmd: Record<string, unknown> = {
       cmd: 'evaluate',
       session_id: sid,
       expression,
-      await_promise: awaitPromise,
+    });
+    await_promise: awaitPromise,
     };
-    if (timeoutMs !== undefined) cmd.timeout_ms = timeoutMs;
-    const resp = await this.sendCommand<WorkerResponse>(cmd);
-    return {
-      action: 'evaluate',
-      success: resp.ok,
-      payload: resp.result,
-      elapsedMs: Date.now() - t0,
-      error: resp.error ? resp.error.message : undefined,
-    };
+  if(timeoutMs !== undefined) cmd.timeout_ms = timeoutMs;
+const resp = await this.sendCommand<WorkerResponse>(cmd);
+return {
+  action: 'evaluate',
+  success: resp.ok,
+  payload: resp.result,
+  elapsedMs: Date.now() - t0,
+  error: resp.error,
+  error: resp.error ? resp.error.message : undefined,
+};
   }
 
+  public async dump(format: 'html' | 'text' = 'html'): Promise < string > {
+  const cmd = format === 'html' ? 'dump_html' : 'dump_text';
+  const resp = await this.sendCommand<{ ok: boolean; result?: string }>({ cmd });
+  return resp.result || '';
   public async click(selector: string, sessionId?: string): Promise<ActionResult> {
     const sid = sessionId || this.defaultSessionId;
     const t0 = Date.now();
@@ -201,11 +225,8 @@ export class ObscuraClient {
   public async title(sessionId?: string): Promise<string> {
     const sid = sessionId || this.defaultSessionId;
     const resp = await this.sendCommand<WorkerResponse>({ cmd: 'title', session_id: sid });
-    if (resp.ok && resp.result !== undefined && resp.result !== null) {
-      if (typeof resp.result === 'string') return resp.result;
-      if (typeof resp.result === 'object') {
-        return (resp.result as Record<string, string>).title || '';
-      }
+    if (resp.ok && resp.result && typeof resp.result === 'object') {
+      return (resp.result as Record<string, string>).title || '';
     }
     return '';
   }
@@ -213,11 +234,8 @@ export class ObscuraClient {
   public async dump(format: 'html' | 'text' = 'html', sessionId?: string): Promise<string> {
     const sid = sessionId || this.defaultSessionId;
     const resp = await this.sendCommand<WorkerResponse>({ cmd: 'dump', session_id: sid, format });
-    if (resp.ok && resp.result !== undefined && resp.result !== null) {
-      if (typeof resp.result === 'string') return resp.result;
-      if (typeof resp.result === 'object') {
-        return (resp.result as Record<string, string>).content || '';
-      }
+    if (resp.ok && resp.result && typeof resp.result === 'object') {
+      return (resp.result as Record<string, string>).content || '';
     }
     return '';
   }
@@ -240,3 +258,4 @@ export class ObscuraClient {
     }
   }
 }
+

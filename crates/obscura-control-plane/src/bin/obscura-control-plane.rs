@@ -5,11 +5,14 @@ use tokio::signal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "http://otel-collector:4317".to_string());
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
     obscura_telemetry::init_tracing("obscura-control-plane", &endpoint);
 
     let db_url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-    let cp = ControlPlane::connect(&db_url, 5).await.map_err(|e| format!("db connect: {e}"))?;
+    let cp = ControlPlane::connect(&db_url, 5)
+        .await
+        .map_err(|e| format!("db connect: {e}"))?;
     cp.migrate().await.map_err(|e| format!("migrate: {e}"))?;
 
     // Liveness/readiness: bind a tiny HTTP health endpoint.

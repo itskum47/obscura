@@ -345,6 +345,7 @@ async fn a_rejected_child_frame_does_not_leave_js_references() {
             "rejected frame stayed in {registry}",
         );
     }
+    std::env::remove_var("OBSCURA_MAX_LIVE_FRAMES");
 }
 
 #[tokio::test]

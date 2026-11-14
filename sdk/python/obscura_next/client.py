@@ -5,9 +5,11 @@ Communicates with the obscura-runtime-worker binary via framed JSON over stdin/s
 
 import json
 import asyncio
+import subprocess
 import os
 import shutil
 import time
+from typing import Optional, Dict, Any, List
 import uuid
 from typing import Optional, Dict, Any
 from .models import SessionConfig, AgentAction, ActionResult, SemanticNode
@@ -47,8 +49,11 @@ def _resolve_worker_binary(binary_path: Optional[str] = None) -> str:
 
 
 class AsyncObscuraClient:
+    """Async client communicating with Obscura Next isolated runtime worker."""
     """Async client communicating with Obscura Next isolated runtime worker.
 
+    def __init__(self, binary_path: str = "obscura"):
+        self.binary_path = binary_path
     Uses the canonical framed JSON protocol (one JSON object per line over stdin/stdout).
     Every request carries an `id` for correlation and a `session_id` for session-scoped commands.
     """
@@ -64,9 +69,11 @@ class AsyncObscuraClient:
         return f"py-{self._req_counter}"
 
     async def start(self):
+        """Starts the worker process with framed IPC."""
         """Starts the worker process with framed IPC (no subcommand)."""
         self._proc = await asyncio.create_subprocess_exec(
             self.binary_path,
+            "worker",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -90,6 +97,7 @@ class AsyncObscuraClient:
 
         return json.loads(resp_line.decode("utf-8"))
 
+    async def navigate(self, url: str, wait_until: str = "load") -> ActionResult:
     async def ping(self) -> Dict[str, Any]:
         """Sends a ping command to the worker."""
         return await self.send_command({"cmd": "ping"})
@@ -128,6 +136,7 @@ class AsyncObscuraClient:
         """Navigates the session's page to a URL."""
         sid = session_id or self.default_session_id
         t0 = time.time()
+        cmd = {"cmd": "navigate", "url": url, "waitUntil": wait_until}
         cmd: Dict[str, Any] = {
             "cmd": "navigate",
             "session_id": sid,
@@ -146,10 +155,12 @@ class AsyncObscuraClient:
             error=resp.get("error"),
         )
 
+    async def evaluate(self, expression: str) -> ActionResult:
     async def evaluate(self, expression: str, session_id: Optional[str] = None, await_promise: bool = True, timeout_ms: Optional[int] = None) -> ActionResult:
         """Evaluates a JavaScript expression in the session."""
         sid = session_id or self.default_session_id
         t0 = time.time()
+        cmd = {"cmd": "evaluate", "expression": expression}
         cmd: Dict[str, Any] = {
             "cmd": "evaluate",
             "session_id": sid,
@@ -168,6 +179,10 @@ class AsyncObscuraClient:
             error=resp.get("error"),
         )
 
+    async def dump(self, format: str = "html") -> str:
+        cmd_name = "dump_html" if format == "html" else "dump_text"
+        resp = await self.send_command({"cmd": cmd_name})
+        return resp.get("result", "")
     async def snapshot(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Gets the accessibility snapshot of the current page."""
         sid = session_id or self.default_session_id
@@ -229,12 +244,8 @@ class AsyncObscuraClient:
             "cmd": "title",
             "session_id": sid,
         })
-        if resp.get("ok") and resp.get("result") is not None:
-            r = resp["result"]
-            if isinstance(r, str):
-                return r
-            if isinstance(r, dict):
-                return r.get("title", "")
+        if resp.get("ok") and resp.get("result"):
+            return resp["result"].get("title", "")
         return ""
 
     async def dump(self, format: str = "html", session_id: Optional[str] = None) -> str:
@@ -245,12 +256,8 @@ class AsyncObscuraClient:
             "session_id": sid,
             "format": format,
         })
-        if resp.get("ok") and resp.get("result") is not None:
-            r = resp["result"]
-            if isinstance(r, str):
-                return r
-            if isinstance(r, dict):
-                return r.get("content", "")
+        if resp.get("ok") and resp.get("result"):
+            return resp["result"].get("content", "")
         return ""
 
     async def close(self):
@@ -267,8 +274,11 @@ class AsyncObscuraClient:
 
 
 class ObscuraClient:
+    """Synchronous convenience wrapper around AsyncObscuraClient."""
     """Synchronous convenience wrapper around AsyncObscuraClient.
 
+    def __init__(self, binary_path: str = "obscura"):
+        self._async_client = AsyncObscuraClient(binary_path)
     Usage:
         with ObscuraClient() as client:
             client.create_session()
@@ -286,12 +296,18 @@ class ObscuraClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         asyncio.run(self._async_client.close())
 
+    def navigate(self, url: str, wait_until: str = "load") -> ActionResult:
+        return asyncio.run(self._async_client.navigate(url, wait_until))
     def ping(self) -> Dict[str, Any]:
         return asyncio.run(self._async_client.ping())
 
+    def evaluate(self, expression: str) -> ActionResult:
+        return asyncio.run(self._async_client.evaluate(expression))
     def health(self) -> Dict[str, Any]:
         return asyncio.run(self._async_client.health())
 
+    def dump(self, format: str = "html") -> str:
+        return asyncio.run(self._async_client.dump(format))
     def create_session(self, session_id: Optional[str] = None, config: Optional[SessionConfig] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.create_session(session_id, config))
 

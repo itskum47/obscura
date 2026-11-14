@@ -4172,15 +4172,21 @@ pub(crate) fn set_grid_calc_context(
 ///
 /// # Safety
 ///
-/// `value` must point to a live `GridCalcExpression`. `LayoutStyle` retains
-/// the Arc owners for the entire lifetime of every layout tree computation.
+/// `value` must point to a live, properly aligned `GridCalcExpression`.
+/// This invariant is upheld because:
+/// 1. Taffy's `set_calc_resolver` requires a C-style function pointer `fn(*const (), f32) -> f32`.
+/// 2. The pointer is created via `Arc::as_ptr` from an `Arc<GridCalcExpression>`.
+/// 3. `LayoutStyle::grid_calc_expressions` retains strong Arc references for the entire
+///    duration of style cascade and Taffy layout computation.
+/// 4. Contextual metrics (`em_px`, `rem_px`, `vw`, `vh`) are stored in `AtomicU32` primitives,
+///    preventing data races during concurrent layout passes.
 #[allow(unsafe_code)]
 pub(crate) fn resolve_grid_calc(value: *const (), basis: f32) -> f32 {
-    if value.is_null() {
+    if value.is_null() || !(value as usize).is_multiple_of(std::mem::align_of::<GridCalcExpression>()) {
         return 0.0;
     }
-    // SAFETY: upheld by `new_taffy_tree` and the Arc ownership documented on
-    // `LayoutStyle::grid_calc_expressions`.
+    // SAFETY: Verified non-null, aligned, and pointed to a valid `GridCalcExpression`
+    // kept alive by `LayoutStyle::grid_calc_expressions` Arc ownership.
     let calc = unsafe { &*value.cast::<GridCalcExpression>() };
     use std::sync::atomic::Ordering;
     resolve_contextual_length(
@@ -5152,7 +5158,7 @@ fn parse_color_for_scheme(value: &str, dark_scheme: bool) -> Option<[u8; 4]> {
     // sRGB; without this every modern-framework color resolved to nothing.
     if lower_full.starts_with("oklch(") || lower_full.starts_with("oklab(") {
         let is_lch = lower_full.starts_with("oklch(");
-        let inner = &lower_full[if is_lch { 6 } else { 6 }..];
+        let inner = &lower_full[6..];
         let inner = inner.strip_suffix(')').unwrap_or(inner);
         let (main, alpha) = match inner.split_once('/') {
             Some((m, a)) => (m, Some(a)),
@@ -5490,13 +5496,13 @@ fn is_complete_color_token(value: &str) -> bool {
 /// Convert an OKLab color (L in 0..1, a/b unbounded) to sRGB rgba bytes.
 /// (oklch is converted to oklab by the caller.) Standard Björn Ottosson matrix.
 fn oklab_to_rgba(l: f32, a: f32, b: f32, alpha: u8) -> [u8; 4] {
-    let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
-    let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
-    let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
     let (lc, mc, sc) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
-    let lr = 4.0767416621 * lc - 3.3077115913 * mc + 0.2309699292 * sc;
-    let lg = -1.2684380046 * lc + 2.6097574011 * mc - 0.3413193965 * sc;
-    let lb = -0.0041960863 * lc - 0.7034186147 * mc + 1.7076147010 * sc;
+    let lr = 4.076_741_7 * lc - 3.307_711_6 * mc + 0.230_969_94 * sc;
+    let lg = -1.268_438 * lc + 2.609_757_4 * mc - 0.341_319_38 * sc;
+    let lb = -0.0041960863 * lc - 0.703_418_6 * mc + 1.707_614_7 * sc;
     let enc = |x: f32| {
         let x = x.clamp(0.0, 1.0);
         let s = if x <= 0.0031308 {
@@ -7048,9 +7054,8 @@ fn parse_counter_directives(
         let value = tokens
             .get(index)
             .and_then(|token| token.parse::<i32>().ok())
-            .map(|value| {
+            .inspect(|_value| {
                 index += 1;
-                value
             })
             .unwrap_or(default_value);
         result.push(crate::CounterDirective {
@@ -8039,7 +8044,6 @@ fn parse_radial_gradient(value: &str, dark_scheme: bool) -> Option<ParsedRadialG
     if prelude.contains(" at ") || prelude.starts_with("at ") {
         let (shape, coords) = prelude
             .split_once(" at ")
-            .map(|(shape, coords)| (shape, coords))
             .or_else(|| prelude.strip_prefix("at ").map(|coords| ("", coords)))?;
         geometry = parse_radial_gradient_geometry(shape)?;
         center = parse_gradient_center(coords);
@@ -8485,12 +8489,11 @@ fn parse_flex_flow_shorthand(value: &str) -> Option<(taffy::FlexDirection, taffy
             "wrap-reverse" => Some(taffy::FlexWrap::WrapReverse),
             _ => None,
         };
-        if let Some(parsed) = parsed_wrap {
+        {
+            let parsed = parsed_wrap?;
             if wrap.replace(parsed).is_some() {
                 return None;
             }
-        } else {
-            return None;
         }
     }
     Some((

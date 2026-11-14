@@ -7,10 +7,9 @@ repository.workspace = true
 description = "Optional scoped render layer for Obscura: layout (taffy) and, with the paint feature, text and raster output for screenshots."
 
 [features]
-default = []
+default = ["paint"]
 # Rasterize the laid-out tree to a pixmap (tiny-skia) with text (cosmic-text
 # shaping + line breaking, ab_glyph fallback) and images.
-# Off by default; the layout core (getBoundingClientRect etc.) works without it.
 paint = ["dep:obscura-ssrf", "dep:tiny-skia", "dep:ab_glyph", "dep:cosmic-text", "dep:swash", "dep:image", "dep:ureq", "dep:base64", "dep:resvg", "dep:usvg", "dep:url", "dep:wuff"]
 
 [dependencies]

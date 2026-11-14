@@ -14,6 +14,7 @@ obscura-control-plane = { path = "../obscura-control-plane" }
 obscura-scheduler = { path = "../obscura-scheduler" }
 obscura-supervisor = { path = "../obscura-supervisor" }
 obscura-worker = { path = "../obscura-worker" }
+obscura-isolation = { path = "../obscura-isolation" }
 obscura-telemetry = { path = "../obscura-telemetry" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -29,3 +30,4 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

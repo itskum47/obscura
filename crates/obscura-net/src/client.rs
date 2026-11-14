@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use std::net::{IpAddr, SocketAddr};
@@ -34,31 +34,27 @@ fn configured_root_paths() -> Vec<std::path::PathBuf> {
     paths
 }
 
-fn configured_root_certificates() -> &'static [reqwest::Certificate] {
-    static ROOTS: OnceLock<Vec<reqwest::Certificate>> = OnceLock::new();
-
-    ROOTS.get_or_init(|| {
-        let mut certificates = Vec::new();
-        for path in configured_root_paths() {
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "failed to read CA certificate file");
-                    continue;
-                }
-            };
-            match reqwest::Certificate::from_pem_bundle(&bytes) {
-                Ok(mut bundle) if !bundle.is_empty() => certificates.append(&mut bundle),
-                _ => match reqwest::Certificate::from_der(&bytes) {
-                    Ok(certificate) => certificates.push(certificate),
-                    Err(error) => {
-                        tracing::warn!(%error, path = %path.display(), "failed to parse CA certificate file");
-                    }
-                },
+fn configured_root_certificates() -> Vec<reqwest::Certificate> {
+    let mut certificates = Vec::new();
+    for path in configured_root_paths() {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "failed to read CA certificate file");
+                continue;
             }
+        };
+        match reqwest::Certificate::from_pem_bundle(&bytes) {
+            Ok(mut bundle) if !bundle.is_empty() => certificates.append(&mut bundle),
+            _ => match reqwest::Certificate::from_der(&bytes) {
+                Ok(certificate) => certificates.push(certificate),
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "failed to parse CA certificate file");
+                }
+            },
         }
-        certificates
-    })
+    }
+    certificates
 }
 
 /// Whether SSL_CERT_FILE / SSL_CERT_DIR request a custom TLS trust store. A
@@ -1111,7 +1107,7 @@ impl ObscuraHttpClient {
                     || std::env::var_os("SSL_CERT_DIR").is_some()
                 {
                     for certificate in configured_root_certificates() {
-                        builder = builder.add_root_certificate(certificate.clone());
+                        builder = builder.add_root_certificate(certificate);
                     }
                 }
 
@@ -1490,7 +1486,7 @@ impl ObscuraHttpClient {
                     Some(headers) => headers.clone(),
                     None => self.extra_headers.read().await.clone(),
                 },
-                resource_type: request.resource_type.clone(),
+                resource_type: request.resource_type,
             };
 
             if let Some(interceptor) = self.interceptor.read().await.as_ref() {
@@ -1706,11 +1702,7 @@ impl ObscuraHttpClient {
                             next_url.scheme()
                         )));
                     }
-                    validate_url(
-                        &next_url,
-                        self.allow_private_network,
-                        false,
-                    )?;
+                    validate_url(&next_url, self.allow_private_network, false)?;
                     validate_request_mode(&request, &next_url)?;
                     redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
                     if next_url.origin() != current_url.origin() {
@@ -3157,7 +3149,10 @@ mod redirect_validation_tests {
         client.set_allow_file_access(true);
 
         let url = Url::parse(&format!("http://{}/redirect", addr)).unwrap();
-        let err = client.fetch(&url).await.expect_err("redirect to file:// must fail");
+        let err = client
+            .fetch(&url)
+            .await
+            .expect_err("redirect to file:// must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("non-HTTP/HTTPS") || msg.contains("file"),
@@ -3181,7 +3176,10 @@ mod redirect_validation_tests {
 
         let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("http://{}/redirect-data", addr)).unwrap();
-        let err = client.fetch(&url).await.expect_err("redirect to data: must fail");
+        let err = client
+            .fetch(&url)
+            .await
+            .expect_err("redirect to data: must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("non-HTTP/HTTPS") || msg.contains("data"),
@@ -3205,7 +3203,10 @@ mod redirect_validation_tests {
 
         let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("http://{}/redirect-js", addr)).unwrap();
-        let err = client.fetch(&url).await.expect_err("redirect to javascript: must fail");
+        let err = client
+            .fetch(&url)
+            .await
+            .expect_err("redirect to javascript: must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("non-HTTP/HTTPS") || msg.contains("javascript"),
@@ -3237,7 +3238,10 @@ mod redirect_validation_tests {
 
         let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("http://{}/start", addr)).unwrap();
-        let resp = client.fetch(&url).await.expect("relative redirect must succeed");
+        let resp = client
+            .fetch(&url)
+            .await
+            .expect("relative redirect must succeed");
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, b"success");
         assert_eq!(resp.redirected_from.len(), 1);
@@ -3268,7 +3272,10 @@ mod redirect_validation_tests {
         let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         client.set_allow_file_access(true);
         let url = Url::parse(&format!("http://{}/start", addr)).unwrap();
-        let err = client.fetch(&url).await.expect_err("redirect chain terminating in file:// must fail");
+        let err = client
+            .fetch(&url)
+            .await
+            .expect_err("redirect chain terminating in file:// must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("non-HTTP/HTTPS") || msg.contains("file"),

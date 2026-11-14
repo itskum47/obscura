@@ -2525,7 +2525,7 @@ fn apply_presentational_hints(node: &obscura_dom::tree::Node, style: &mut crate:
     if style.aspect_ratio.is_none()
         && node
             .as_element()
-            .map_or(false, |element| element.local.as_ref() == "svg")
+            .is_some_and(|element| element.local.as_ref() == "svg")
     {
         if let Some(view_box) = node
             .get_attribute("viewBox")
@@ -2560,7 +2560,7 @@ fn apply_picture_source_hints(
     };
     if img
         .as_element()
-        .map_or(true, |element| element.local.as_ref() != "img")
+        .is_none_or(|element| element.local.as_ref() != "img")
     {
         return;
     }
@@ -2584,7 +2584,7 @@ fn apply_picture_source_hints(
         };
         if source
             .as_element()
-            .map_or(true, |element| element.local.as_ref() != "source")
+            .is_none_or(|element| element.local.as_ref() != "source")
         {
             continue;
         }
@@ -3314,14 +3314,10 @@ pub fn layout_dom_with_resources(
         .collect();
     let intrinsic = intrinsic
         .iter()
-        .filter_map(|(&nid, &(width, height))| {
-            (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0).then(|| {
-                (
+        .filter(|&(&_nid, &(width, height))| width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0).map(|(&nid, &(width, height))| (
                     nid,
                     crate::ReplacedIntrinsic::from_dimensions(width, height),
-                )
-            })
-        })
+                ))
         .collect();
     layout_dom_with_web_fonts(tree, viewport, &intrinsic, &fonts)
 }
@@ -3869,13 +3865,12 @@ fn add_inserted_sibling_scopes(
         return;
     };
     let may_start_sibling_selector = map.node_may_start_sibling_selector(tree, node);
-    if map.has_adjacent_sibling_selectors() {
-        if position != 0 || may_start_sibling_selector {
+    if map.has_adjacent_sibling_selectors()
+        && (position != 0 || may_start_sibling_selector) {
             if let Some(next) = siblings.get(position + 1).copied() {
                 add_style_subtree(tree, next, dirty);
             }
         }
-    }
     if map.has_general_sibling_selectors() && may_start_sibling_selector {
         for following in siblings.iter().skip(position + 1).copied() {
             add_style_subtree(tree, following, dirty);
@@ -5516,8 +5511,8 @@ fn layout_dom_once(
     cascade_walk(
         tree,
         tree.document(),
-        &sheet,
-        &sheet,
+        sheet,
+        sheet,
         shadow_sheets,
         &mut matcher,
         &mut styles,
@@ -5747,10 +5742,12 @@ fn layout_dom_once(
 
         // The root element's containing block is the initial containing block,
         // i.e. the viewport width.
-        let mut root_inh = Inherited::default();
-        root_inh.cb_width = initial_cb_width;
-        root_inh.cb_height = viewport.1;
-        root_inh.cb_height_definite = true;
+        let root_inh = Inherited {
+            cb_width: initial_cb_width,
+            cb_height: viewport.1,
+            cb_height_definite: true,
+            ..Inherited::default()
+        };
         // This set records computed definiteness after walking the real
         // containing-block chain. Merely retaining `height:Percent` is not
         // sufficient: under an auto-height containing block it computes to
@@ -6292,9 +6289,9 @@ fn layout_dom_once(
                         style.font_variation_settings = Some(inh.font_variation_settings.clone())
                     }
                 }
-                let is_table = tree.borrow_node(id).map_or(false, |node| {
+                let is_table = tree.borrow_node(id).is_some_and(|node| {
                     node.as_element()
-                        .map_or(false, |name| name.local.as_ref() == "table")
+                        .is_some_and(|name| name.local.as_ref() == "table")
                 });
                 if is_table && inh.legacy_center && style.text_align.is_none() {
                     // The vendor alignment used by <center> centers the table
@@ -6372,8 +6369,8 @@ fn layout_dom_once(
                     Some(value) => inh.border_collapse = value,
                     None => style.border_collapse = Some(inh.border_collapse),
                 }
-                let is_table_part = tree.borrow_node(id).map_or(false, |node| {
-                    node.as_element().map_or(false, |name| {
+                let is_table_part = tree.borrow_node(id).is_some_and(|node| {
+                    node.as_element().is_some_and(|name| {
                         matches!(
                             name.local.as_ref(),
                             "tbody" | "thead" | "tfoot" | "tr" | "td" | "th"
@@ -6908,10 +6905,10 @@ fn layout_dom_once(
                     .descendants(id)
                     .into_iter()
                     .filter(|option_id| {
-                        tree.borrow_node(*option_id).map_or(false, |option| {
+                        tree.borrow_node(*option_id).is_some_and(|option| {
                             option
                                 .as_element()
-                                .map_or(false, |name| name.local.as_ref() == "option")
+                                .is_some_and(|name| name.local.as_ref() == "option")
                         })
                     })
                     .map(|option_id| tree.text_content(option_id).trim().to_string())
@@ -7323,7 +7320,7 @@ fn layout_dom_once(
                 // Outer tables consume their nested tables' intrinsic sizes.
                 // Only after an outer depth is fixed can a root layout expose
                 // the real cell width available to the next nested depth.
-                tables.sort_by(|a, b| a.2.cmp(&b.2));
+                tables.sort_by_key(|a| a.2);
                 let mut table_index = 0usize;
                 while table_index < tables.len() {
                     let depth = tables[table_index].2;
@@ -8398,9 +8395,7 @@ fn folded_inline_relative_offset(
     let mut offset = (0.0, 0.0);
     let mut current = Some(owner);
     while let Some(id) = current {
-        let Some(style) = styles.get(&id) else {
-            return None;
-        };
+        let style = styles.get(&id)?;
         if !style.ignores_used_box_sizes() {
             break;
         }
@@ -8641,10 +8636,10 @@ fn collect_effective_grid_children(
     }
 }
 
-fn effective_grid_child_style<'a>(
+fn effective_grid_child_style(
     child: EffectiveGridChild,
-    styles: &'a HashMap<NodeId, crate::LayoutStyle>,
-) -> Option<&'a crate::LayoutStyle> {
+    styles: &HashMap<NodeId, crate::LayoutStyle>,
+) -> Option<&crate::LayoutStyle> {
     match child {
         EffectiveGridChild::Dom(node) => styles.get(&node),
         EffectiveGridChild::Generated { host, kind } => {
@@ -8657,10 +8652,10 @@ fn effective_grid_child_style<'a>(
     }
 }
 
-fn effective_grid_child_style_mut<'a>(
+fn effective_grid_child_style_mut(
     child: EffectiveGridChild,
-    styles: &'a mut HashMap<NodeId, crate::LayoutStyle>,
-) -> Option<&'a mut crate::LayoutStyle> {
+    styles: &mut HashMap<NodeId, crate::LayoutStyle>,
+) -> Option<&mut crate::LayoutStyle> {
     match child {
         EffectiveGridChild::Dom(node) => styles.get_mut(&node),
         EffectiveGridChild::Generated { host, kind } => {
@@ -9575,7 +9570,7 @@ fn narrow_intersecting_descendants(
         .children(id)
         .into_iter()
         .filter(|child| {
-            styles.get(child).map_or(false, |child_style| {
+            styles.get(child).is_some_and(|child_style| {
                 child_style.display != crate::Display::None
                     && child_style.float.is_none()
                     && !matches!(child_style.position, Some(taffy::Position::Absolute))
@@ -9982,8 +9977,8 @@ fn apply_table_cell_block_alignment(
         {
             continue;
         }
-        let is_cell = tree.borrow_node(dom_id).map_or(false, |dom_node| {
-            dom_node.as_element().map_or(false, |element| {
+        let is_cell = tree.borrow_node(dom_id).is_some_and(|dom_node| {
+            dom_node.as_element().is_some_and(|element| {
                 matches!(element.local.as_ref(), "td" | "th")
             })
         });
@@ -10995,7 +10990,7 @@ fn pseudo_requires_generated_box(style: &crate::LayoutStyle, content: Option<&st
 }
 
 fn has_in_flow_generated_pseudo(pseudo: Option<&crate::LayoutStyle>) -> bool {
-    pseudo.map_or(false, |pseudo| {
+    pseudo.is_some_and(|pseudo| {
         pseudo.display != crate::Display::None
             && !matches!(pseudo.position, Some(taffy::Position::Absolute))
     })
@@ -11148,7 +11143,7 @@ fn synthesize_row_rects(
                     node.get_attribute("rowspan")
                         .and_then(|value| value.trim().parse::<usize>().ok())
                 })
-                .map_or(true, |span| span == 1);
+                .is_none_or(|span| span == 1);
             if spans_one_row {
                 block = Some(match block {
                     Some(a) => a.union(r),
@@ -12958,7 +12953,7 @@ fn defer_cyclic_flex_inline_sizes(
                     _ => unreachable!(),
                 };
                 functional
-                    .or_else(|| match dimension {
+                    .or(match dimension {
                         crate::Dimension::Percent(percent)
                             if slot != 4 || !style.has_replaced_sizing =>
                         {
@@ -12995,7 +12990,7 @@ fn defer_cyclic_flex_inline_sizes(
                         parent_style.flex_direction,
                         Some(taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse)
                     );
-                let item_is_indefinite = styles.get(&item).map_or(false, |style| {
+                let item_is_indefinite = styles.get(&item).is_some_and(|style| {
                     (!matches!(style.width, crate::Dimension::Px(_))
                         || style.size_expressions[0]
                             .as_deref()
@@ -13423,11 +13418,9 @@ fn build(
     // narrower than its container because of gutters.
     if matches!(style.max_width, crate::Dimension::Percent(_))
         && matches!(style.min_width, crate::Dimension::Auto)
-    {
-        if is_in_flow_grid_item(tree, id, style, styles) {
+        && is_in_flow_grid_item(tree, id, style, styles) {
             taffy_style.min_size.width = taffy::Dimension::length(0.0);
         }
-    }
 
     // Outside a foldable inline run, BR is a zero-inline-size line
     // participant. The mixed-inline fallback adds a separate anonymous
@@ -13480,7 +13473,7 @@ fn build(
             // formatting rather than a single max-content line.
             let has_in_flow_block_child = rendered_children(tree, id)
                 .iter()
-                .any(|child| styles.get(child).map_or(false, is_in_flow_block_level));
+                .any(|child| styles.get(child).is_some_and(is_in_flow_block_level));
             if !has_in_flow_block_child {
                 taffy_style.flex_wrap = taffy::FlexWrap::NoWrap;
             }
@@ -13752,7 +13745,7 @@ fn build(
     let internal_mixed_block_flow = style.internal_flex_container
         && dom_children
             .iter()
-            .any(|cid| styles.get(cid).map_or(false, is_in_flow_block_level));
+            .any(|cid| styles.get(cid).is_some_and(is_in_flow_block_level));
     // In flex and grid formatting contexts, collapsible whitespace-only text
     // between items does not generate an anonymous item. Taffy places each
     // stray whitespace leaf in the item sequence, shifting every real child.
@@ -13769,7 +13762,7 @@ fn build(
         flatten_contents_children(tree, &dom_children, styles, &mut flat);
         dom_children = flat;
         dom_children.retain(|&cid| {
-            tree.borrow_node(cid).map_or(false, |n| n.is_element())
+            tree.borrow_node(cid).is_some_and(|n| n.is_element())
                 || !tree.text_content(cid).trim().is_empty()
         });
         // Flex and grid placement consume the order-modified document order.
@@ -13823,7 +13816,7 @@ fn build(
             Some(taffy::FlexDirection::Column | taffy::FlexDirection::ColumnReverse)
         );
         let has_main_auto_margin = dom_children.iter().any(|cid| {
-            styles.get(cid).map_or(false, |child| {
+            styles.get(cid).is_some_and(|child| {
                 if column {
                     child.margin_auto[0] || child.margin_auto[2]
                 } else {
@@ -13847,7 +13840,7 @@ fn build(
         has_float_child && can_use_native_float_band(tree, style, &dom_children, styles);
     let has_in_flow_block_child = dom_children
         .iter()
-        .any(|cid| styles.get(cid).map_or(false, is_in_flow_block_level));
+        .any(|cid| styles.get(cid).is_some_and(is_in_flow_block_level));
     let is_internal_table_cell = style.is_table_cell_box && style.internal_flex_container;
 
     // `text-align` affects inline content, never the used width or placement
@@ -14026,7 +14019,7 @@ fn build(
             let fills_inline_axis = id_map
                 .get(child)
                 .and_then(|dom_id| styles.get(dom_id))
-                .map_or(false, |child_style| {
+                .is_some_and(|child_style| {
                     child_style.display == crate::Display::Block
                         && child_style.width == crate::Dimension::Auto
                         && child_style.float.is_none()
@@ -14058,7 +14051,7 @@ fn build(
             id_map
                 .get(child)
                 .and_then(|dom_id| styles.get(dom_id))
-                .map_or(false, |child_style| {
+                .is_some_and(|child_style| {
                     child_style.break_inside_avoid
                         && child_style.float.is_none()
                         && !matches!(child_style.position, Some(taffy::Position::Absolute))
@@ -14242,7 +14235,7 @@ fn build_mixed_block(
             } else {
                 let is_forced_break = node
                     .as_element()
-                    .map_or(false, |element| element.local.as_ref() == "br");
+                    .is_some_and(|element| element.local.as_ref() == "br");
                 is_forced_break || crate::is_inline_level_box(s)
             }
         } else {
@@ -14311,7 +14304,7 @@ fn build_mixed_block(
                     tree, cid, taffy_tree, id_map, words, engine, ifc_items, styles,
                 );
                 if style.legacy_center {
-                    let has_default_horizontal_margins = styles.get(&cid).map_or(false, |child| {
+                    let has_default_horizontal_margins = styles.get(&cid).is_some_and(|child| {
                         child.margin.left == 0.0
                             && child.margin.right == 0.0
                             && !child.margin_auto[1]
@@ -14332,7 +14325,7 @@ fn build_mixed_block(
             }
             Seg::Run(run) => {
                 let has_text_strut = run.iter().any(|&cid| {
-                    tree.borrow_node(cid).map_or(false, |node| {
+                    tree.borrow_node(cid).is_some_and(|node| {
                         matches!(node.data, obscura_dom::tree::NodeData::Text { .. })
                     })
                 });
@@ -14341,7 +14334,7 @@ fn build_mixed_block(
                 // inline siblings, but trim indentation adjacent to block
                 // boundaries so pretty-printed markup starts at the line edge.
                 let is_whitespace_text = |cid: NodeId| {
-                    tree.borrow_node(cid).map_or(false, |node| {
+                    tree.borrow_node(cid).is_some_and(|node| {
                         matches!(node.data, obscura_dom::tree::NodeData::Text { .. })
                             && tree.text_content(cid).trim().is_empty()
                     })
@@ -14516,7 +14509,7 @@ fn needs_column_flex_text_fit_content_cap(
     }
 
     let has_direct_text = rendered_children(tree, id).into_iter().any(|child| {
-        tree.borrow_node(child).map_or(false, |node| {
+        tree.borrow_node(child).is_some_and(|node| {
             matches!(
                 &node.data,
                 obscura_dom::tree::NodeData::Text { contents }
@@ -14925,7 +14918,7 @@ fn max_definite_descendant_width(
 ) -> Option<f32> {
     let mut best: Option<f32> = None;
     for d in tree.descendants(id) {
-        if let Some(crate::Dimension::Px(w)) = styles.get(&d).map(|s| s.width.clone()) {
+        if let Some(crate::Dimension::Px(w)) = styles.get(&d).map(|s| s.width) {
             if w > 0.0 {
                 best = Some(best.map_or(w, |b: f32| b.max(w)));
             }
@@ -15029,7 +15022,7 @@ fn is_structural_native_float_pseudo(style: &crate::LayoutStyle) -> bool {
         && style
             .before_content
             .as_deref()
-            .map_or(true, |content| content.trim().is_empty())
+            .is_none_or(|content| content.trim().is_empty())
 }
 
 /// Native taffy floats are currently sound for a deliberately small structural
@@ -15443,13 +15436,13 @@ fn build_children_with_float_zone(
         .iter()
         .copied()
         .filter(|cid| {
-            styles.get(cid).map_or(false, |style| {
+            styles.get(cid).is_some_and(|style| {
                 style.float == Some(crate::Float::Right) && style.display != crate::Display::None
             })
         })
         .collect();
     let has_left_float = dom_children.iter().any(|cid| {
-        styles.get(cid).map_or(false, |style| {
+        styles.get(cid).is_some_and(|style| {
             style.float == Some(crate::Float::Left) && style.display != crate::Display::None
         })
     });
@@ -15462,7 +15455,7 @@ fn build_children_with_float_zone(
         }
         styles
             .get(cid)
-            .map_or(true, |style| style.display != crate::Display::Block)
+            .is_none_or(|style| style.display != crate::Display::Block)
     });
     if right_floats.len() >= 2 && !has_left_float && flow_is_inline {
         // Removing out-of-flow items must not remove the one collapsible
@@ -15476,7 +15469,7 @@ fn build_children_with_float_zone(
             if is_float(cid) {
                 continue;
             }
-            let is_whitespace = tree.borrow_node(cid).map_or(false, |node| {
+            let is_whitespace = tree.borrow_node(cid).is_some_and(|node| {
                 !node.is_element() && tree.text_content(cid).trim().is_empty()
             });
             if is_whitespace {
@@ -15672,7 +15665,7 @@ fn build_children_with_float_zone(
         if is_float(cid) && styles.get(&cid).and_then(|style| style.float) == float_side {
             float_count += 1;
             run_end += 1;
-        } else if tree.borrow_node(cid).map_or(false, |n| !n.is_element())
+        } else if tree.borrow_node(cid).is_some_and(|n| !n.is_element())
             && tree.text_content(cid).trim().is_empty()
         {
             run_end += 1;
@@ -15803,12 +15796,12 @@ fn build_children_with_float_zone(
         }) else {
             return false;
         };
-        match (float_side, c) {
-            (_, crate::Clear::Both) => true,
-            (Some(crate::Float::Left), crate::Clear::Left) => true,
-            (Some(crate::Float::Right), crate::Clear::Right) => true,
-            _ => false,
-        }
+        matches!(
+            (float_side, c),
+            (_, crate::Clear::Both)
+                | (Some(crate::Float::Left), crate::Clear::Left)
+                | (Some(crate::Float::Right), crate::Clear::Right)
+        )
     };
     let mut zone_end = float_idx + 1;
     let mut flow_height_estimate = 0.0f32;

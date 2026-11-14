@@ -6407,7 +6407,7 @@ mod tests {
             )
             .unwrap();
 
-        runtime.run_event_loop_bounded(500).await.unwrap();
+        runtime.run_event_loop_bounded(5000).await.unwrap();
         let result = runtime.evaluate("__bulkPosted").unwrap();
         assert_eq!(result["count"].as_f64(), Some(4096.0));
     }

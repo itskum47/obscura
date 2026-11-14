@@ -155,6 +155,11 @@ impl SessionManager {
             return Err(WorkerError::SessionAlreadyExists(id));
         }
 
+        // Apply OS-level process sandboxing based on the configured profile
+        let isolation =
+            IsolationPolicy::for_profile(config.profile.unwrap_or(IsolationProfile::Standard));
+        isolation.apply_process_sandbox()?;
+
         let session = ManagedSession::new(id.clone(), config);
         guard.insert(id, Arc::new(TokioMutex::new(session)));
 
@@ -1146,6 +1151,34 @@ mod tests {
         let err = resp.error.unwrap();
         assert_eq!(err.code, "SECURITY_BLOCK");
         assert!(err.message.contains("Security block"));
+    }
+
+    #[tokio::test]
+    async fn test_session_untrusted_isolation_fail_closed() {
+        let manager = SessionManager::new();
+        let session_id = "test-session-untrusted".to_string();
+
+        let req = WorkerRequest {
+            id: Some("8".to_string()),
+            version: "1.0".to_string(),
+            command: WorkerCommand::SessionCreate {
+                session_id,
+                config: SessionConfig {
+                    profile: Some(IsolationProfile::Untrusted),
+                    ..SessionConfig::default()
+                },
+            },
+        };
+
+        let caps = obscura_isolation::PlatformCapabilities::probe();
+        let resp = dispatch_worker_command(&manager, req).await;
+
+        if !caps.is_production_safe_for_untrusted {
+            assert!(!resp.ok);
+            assert_eq!(resp.error.unwrap().code, "EXECUTION_ERROR");
+        } else {
+            assert!(resp.ok);
+        }
     }
 
     #[tokio::test]

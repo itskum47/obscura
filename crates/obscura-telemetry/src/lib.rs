@@ -514,7 +514,10 @@ pub fn is_loopback(bind_addr: &str) -> bool {
 
 impl MetricsServerConfig {
     /// Creates a production token-authenticated configuration.
-    pub fn new_token(bind_addr: impl Into<String>, token: impl Into<String>) -> Result<Self, MetricsConfigError> {
+    pub fn new_token(
+        bind_addr: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<Self, MetricsConfigError> {
         let bind_addr = bind_addr.into();
         let token = token.into();
         if token.trim().is_empty() {
@@ -603,7 +606,10 @@ impl MetricsServer {
     }
 
     /// Creates a new `MetricsServer` using fail-closed configuration from environment variables.
-    pub fn from_env(bind_addr: impl Into<String>, registry: MetricsRegistry) -> Result<Self, MetricsConfigError> {
+    pub fn from_env(
+        bind_addr: impl Into<String>,
+        registry: MetricsRegistry,
+    ) -> Result<Self, MetricsConfigError> {
         let config = MetricsServerConfig::from_env(bind_addr)?;
         Ok(Self::new(config, registry))
     }
@@ -830,7 +836,8 @@ mod tests {
     async fn test_metrics_auth_case3_valid_token() {
         let reg = MetricsRegistry::new();
         reg.counter("obscura_sessions_total").unwrap().inc_by(7);
-        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let config =
+            MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
         let server = MetricsServer::new(config, reg);
         let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
 
@@ -858,7 +865,8 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_auth_case4_missing_authorization_header() {
         let reg = MetricsRegistry::new();
-        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let config =
+            MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
         let server = MetricsServer::new(config, reg);
         let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
 
@@ -882,7 +890,8 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_auth_case5_invalid_token() {
         let reg = MetricsRegistry::new();
-        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let config =
+            MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
         let server = MetricsServer::new(config, reg);
         let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
 
@@ -906,7 +915,8 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_auth_case6_incorrect_bearer_scheme() {
         let reg = MetricsRegistry::new();
-        let config = MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
+        let config =
+            MetricsServerConfig::new_token("127.0.0.1:0", "super-secret-token-123").unwrap();
         let server = MetricsServer::new(config, reg);
         let (addr, shutdown_tx) = server.spawn().await.expect("bind server");
 
@@ -1029,11 +1039,13 @@ mod tests {
 
             // Must reject unauthenticated development mode on 0.0.0.0
             let dev_err = MetricsServerConfig::new_development(ep).unwrap_err();
-            assert_eq!(dev_err, MetricsConfigError::NonLoopbackUnauthenticated(ep.to_string()));
+            assert_eq!(
+                dev_err,
+                MetricsConfigError::NonLoopbackUnauthenticated(ep.to_string())
+            );
         }
     }
 }
-
 
 /// Initialize OpenTelemetry tracing with OTLP export.
 pub fn init_tracing(service_name: &str, otlp_endpoint: &str) {
@@ -1051,11 +1063,10 @@ pub fn init_tracing(service_name: &str, otlp_endpoint: &str) {
         .expect("otlp exporter");
 
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-         .with_simple_exporter(exporter)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-            "service.name",
-            service_name.to_string(),
-        )]))
+        .with_simple_exporter(exporter)
+        .with_resource(opentelemetry_sdk::Resource::new(vec![
+            opentelemetry::KeyValue::new("service.name", service_name.to_string()),
+        ]))
         .build();
 
     let tracer = provider.tracer(service_name.to_string());

@@ -522,11 +522,7 @@ impl StealthHttpClient {
                             next_url.scheme()
                         )));
                     }
-                    validate_url(
-                        &next_url,
-                        self.allow_private_network,
-                        false,
-                    )?;
+                    validate_url(&next_url, self.allow_private_network, false)?;
                     validate_request_mode(&request, &next_url)?;
                     redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
                     if next_url.origin() != current_url.origin() {

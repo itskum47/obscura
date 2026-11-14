@@ -1,4 +1,4 @@
-use obscura_control_plane::{ControlPlane, NatsClient, NatsConsumer, Principal};
+use obscura_control_plane::{ControlPlane, NatsClient, NatsConsumer};
 use obscura_scheduler::DispatchMessage;
 use obscura_supervisor::{SupervisorConfig, WorkerPoolSupervisor};
 use obscura_worker::{NavigationWaitUntil, SessionConfig, WorkerCommand, WorkerRequest};
@@ -29,10 +29,8 @@ async fn main() {
             unsafe {
                 if agent_pid > 0 && libc::kill(agent_pid, 0) != 0 {
                     if worker_pgid > 0 {
-                        unsafe {
-                            libc::kill(-worker_pgid, libc::SIGKILL);
-                            libc::kill(worker_pgid, libc::SIGKILL);
-                        }
+                        libc::kill(-worker_pgid, libc::SIGKILL);
+                        libc::kill(worker_pgid, libc::SIGKILL);
                     }
                     break;
                 }
@@ -136,9 +134,21 @@ async fn main() {
         .expect("consumer");
 
     tracing::info!(worker_id = %worker_id, "worker agent started");
-    let ms = obscura_telemetry::MetricsServer::from_env("0.0.0.0:9093", obscura_telemetry::global_metrics().clone())
-        .expect("metrics server configuration");
-    let _keep = ms.spawn().await.expect("metrics server bind");
+    let metrics_port = std::env::var("OBSCURA_METRICS_PORT").unwrap_or_else(|_| "0".to_string());
+    let bind_addr = format!("0.0.0.0:{}", metrics_port);
+    let _keep = match obscura_telemetry::MetricsServer::from_env(&bind_addr, obscura_telemetry::global_metrics().clone()) {
+        Ok(ms) => match ms.spawn().await {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to bind metrics server; continuing");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::debug!(error = %e, "metrics server not configured or missing token; continuing");
+            None
+        }
+    };
 
     // Readiness/health endpoint.
     let nats_health = nats.clone();
@@ -226,7 +236,15 @@ async fn main() {
                                     reg.insert(dispatch.job_id, worker.clone());
                                 }
 
-                                // ensure session exists
+                                let principal = cp
+                                    .service_principal(
+                                        "worker-agent",
+                                        &std::env::var("OBSCURA_SERVICE_BOOTSTRAP_SECRET")
+                                            .unwrap_or_default(),
+                                    )
+                                    .unwrap();
+
+                                // ensure session exists and OS isolation is engaged
                                 let create_req = WorkerRequest {
                                     id: Some(format!("create-{}", dispatch.dispatch_id)),
                                     version: "1.0".to_string(),
@@ -235,9 +253,59 @@ async fn main() {
                                         config: SessionConfig::default(),
                                     },
                                 };
-                                let _ = worker
+                                let create_resp = worker
                                     .send_request(create_req, std::time::Duration::from_secs(10))
                                     .await;
+
+                                match create_resp {
+                                    Ok(resp) if resp.ok => {}
+                                    Ok(resp) => {
+                                        let err_msg = resp
+                                            .error
+                                            .map(|e| e.message)
+                                            .unwrap_or_else(|| "session creation rejected".into());
+                                        tracing::error!(
+                                            job_id = %dispatch.job_id,
+                                            error = %err_msg,
+                                            "Failed to create isolated session for job"
+                                        );
+                                        let _ = cp
+                                            .fail_job(
+                                                &principal,
+                                                dispatch.job_id,
+                                                dispatch.tenant_id,
+                                                dispatch.attempt_id,
+                                                fencing_token,
+                                                "ISOLATION_FAILURE",
+                                                &format!("Isolation failure: {err_msg}"),
+                                                false,
+                                            )
+                                            .await;
+                                        let _ = msg.ack().await;
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            job_id = %dispatch.job_id,
+                                            error = %e,
+                                            "Worker communication failure during session creation"
+                                        );
+                                        let _ = cp
+                                            .fail_job(
+                                                &principal,
+                                                dispatch.job_id,
+                                                dispatch.tenant_id,
+                                                dispatch.attempt_id,
+                                                fencing_token,
+                                                "COMM_ERROR",
+                                                &format!("Worker communication failure: {e}"),
+                                                true,
+                                            )
+                                            .await;
+                                        let _ = msg.ack().await;
+                                        continue;
+                                    }
+                                }
 
                                 let req = WorkerRequest {
                                     id: Some(dispatch.dispatch_id.to_string()),
@@ -267,13 +335,6 @@ async fn main() {
                                     }
                                 });
 
-                                let principal = cp
-                                    .service_principal(
-                                        "worker-agent",
-                                        &std::env::var("OBSCURA_SERVICE_BOOTSTRAP_SECRET")
-                                            .unwrap_or_default(),
-                                    )
-                                    .unwrap();
                                 // Execute browser with select against lease loss
                                 let worker_clone = worker.clone();
                                 let exec_future = worker_clone
@@ -292,12 +353,15 @@ async fn main() {
                                     }
                                     _ = &mut loss_rx => {
                                         renew_handle.abort();
-                                        // Immediately kill process group of child browser worker
+                                        let _ = worker_clone.kill().await;
+                                        // Immediately kill process group and process of child browser worker
                                         #[cfg(unix)]
                                         if let Some(pid) = worker_clone.pid {
                                             unsafe {
                                                 libc::kill(-(pid as i32), libc::SIGTERM);
                                                 libc::kill(-(pid as i32), libc::SIGKILL);
+                                                libc::kill(pid as i32, libc::SIGTERM);
+                                                libc::kill(pid as i32, libc::SIGKILL);
                                             }
                                         }
                                         // ownership lost: fail job, don't persist success

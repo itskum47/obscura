@@ -160,7 +160,7 @@ fn main() {
 }
 
 /// Generate a snapshot using the host V8 (for native builds or as fallback).
-fn generate_host_snapshot(bootstrap_js: &str, snapshot_path: &PathBuf) {
+fn generate_host_snapshot(bootstrap_js: &str, snapshot_path: &std::path::Path) {
     assert!(
         bootstrap_js.is_ascii(),
         "bootstrap source must be ASCII; use Unicode escapes in literals"
@@ -220,7 +220,7 @@ Object.defineProperty(globalThis, '__obscura_snapshot_compile', {
     )
     .expect("Failed to create V8 snapshot");
 
-    std::fs::write(&snapshot_path, &*output.output).expect("Failed to write snapshot");
+    std::fs::write(snapshot_path, &*output.output).expect("Failed to write snapshot");
     println!("cargo:rustc-cfg=obscura_external_bootstrap");
     println!(
         "cargo:rustc-env=OBSCURA_SNAPSHOT_PATH={}",

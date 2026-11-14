@@ -230,15 +230,27 @@ static WEB_FONT_DATABASES: OnceLock<Mutex<VecDeque<Arc<CachedWebFontSet>>>> = On
 
 #[cfg(test)]
 static BASE_FONT_DATABASE_BUILDS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static EXTRA_FONT_DIRECTORIES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Configure additional process-wide fonts before the first render.
 ///
 /// Returns false when fonts have already been configured or initialized.
 pub fn configure_font_directories(directories: Vec<PathBuf>) -> bool {
-    if BASE_FONT_DATABASE.get().is_some() {
-        return false;
+    #[cfg(test)]
+    {
+        if let Ok(mut extra) = EXTRA_FONT_DIRECTORIES.lock() {
+            *extra = directories;
+        }
+        true
     }
-    FONT_DIRECTORIES.set(directories).is_ok()
+    #[cfg(not(test))]
+    {
+        if BASE_FONT_DATABASE.get().is_some() {
+            return false;
+        }
+        FONT_DIRECTORIES.set(directories).is_ok()
+    }
 }
 
 fn load_font_directories(
@@ -1055,7 +1067,7 @@ impl VariableSwashCache {
                 }
             }
             SwashContent::Color => {
-                for (index, rgba) in image.data.chunks_exact(4).enumerate() {
+                for (index, rgba) in image.data.as_chunks::<4>().0.iter().enumerate() {
                     let x = index as i32 % image.placement.width as i32;
                     let y = index as i32 / image.placement.width as i32;
                     f(
@@ -1115,7 +1127,7 @@ impl ReplacedItem {
         let expression_has_percentage = |index: usize| {
             style.size_expressions[index]
                 .as_deref()
-                .map_or(false, |expression| expression.contains('%'))
+                .is_some_and(|expression| expression.contains('%'))
         };
         let explicit_ratio = style
             .aspect_ratio
@@ -1302,7 +1314,8 @@ impl TextEngine {
     }
 
     pub(crate) fn new_with_web_fonts_and_emoji(fonts: &[WebFont], load_emoji: bool) -> Self {
-        let (db, loaded_families) = if fonts.is_empty() {
+        #[allow(unused_mut)]
+        let (mut db, mut loaded_families) = if fonts.is_empty() {
             (*base_font_database(load_emoji)).clone()
         } else if let Some(cached) = cached_web_font_database(fonts, load_emoji) {
             cached.database.clone()
@@ -1325,6 +1338,15 @@ impl TextEngine {
             }
             cache_web_font_database(fonts, load_emoji, (db, loaded_families))
         };
+        #[cfg(test)]
+        if let Ok(extra) = EXTRA_FONT_DIRECTORIES.lock() {
+            if !extra.is_empty() {
+                let ids = load_font_directories(&mut db, &extra);
+                let decls: Vec<_> = ids.into_iter().map(|id| (id, None, None, None)).collect();
+                let extra_families = register_loaded_faces(&db, decls);
+                loaded_families.extend(extra_families);
+            }
+        }
         let font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         TextEngine {
             font_system,
@@ -2533,10 +2555,7 @@ impl SpanAttrs {
             overflow_wrap,
         });
         a = a.metadata(
-            fill | variation
-                | usize::from(self.underline) * META_UNDERLINE
-                | usize::from(self.overline) * META_OVERLINE
-                | usize::from(self.line_through) * META_LINE_THROUGH,
+            fill | variation | (usize::from(self.underline) * META_UNDERLINE) | (usize::from(self.overline) * META_OVERLINE) | (usize::from(self.line_through) * META_LINE_THROUGH),
         );
         a
     }

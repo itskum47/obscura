@@ -24,12 +24,14 @@ pub fn canonical_domain(domain: &str) -> String {
     domain.trim().trim_start_matches('.').to_lowercase()
 }
 
+type CookieStore = HashMap<String, HashMap<(String, String), CookieEntry>>;
+
 pub struct CookieJar {
     /// domain -> (name, path) -> entry. RFC 6265 §5.3 identifies a cookie by
     /// (name, domain, path); the outer map scopes by domain and the inner key
     /// carries name+path so same-name cookies on different paths coexist
     /// instead of clobbering each other.
-    cookies: RwLock<HashMap<String, HashMap<(String, String), CookieEntry>>>,
+    cookies: RwLock<CookieStore>,
 }
 
 /// The site relationship used when deciding whether a cookie may be sent.
@@ -62,17 +64,13 @@ impl CookieJar {
     /// (in any thread, for any reason) must not turn every later cookie
     /// operation in the process into a panic: the jar's state is a plain map
     /// that is valid at every point a guard can be dropped.
-    fn read_jar(
-        &self,
-    ) -> RwLockReadGuard<'_, HashMap<String, HashMap<(String, String), CookieEntry>>> {
+    fn read_jar(&self) -> RwLockReadGuard<'_, CookieStore> {
         self.cookies
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn write_jar(
-        &self,
-    ) -> RwLockWriteGuard<'_, HashMap<String, HashMap<(String, String), CookieEntry>>> {
+    fn write_jar(&self) -> RwLockWriteGuard<'_, CookieStore> {
         self.cookies
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -468,11 +466,8 @@ impl CookieJar {
                         }
                         _ => {}
                     }
-                } else {
-                    match attr.to_lowercase().as_str() {
-                        "secure" => secure = true,
-                        _ => {}
-                    }
+                } else if attr.eq_ignore_ascii_case("secure") {
+                    secure = true;
                 }
             }
         }
@@ -717,7 +712,7 @@ fn parse_http_date(s: &str) -> Result<u64, ()> {
         };
     }
     let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     for m in 1..month {
         days_total += days_in_month[m as usize] + if m == 2 && is_leap { 1 } else { 0 };
     }

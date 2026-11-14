@@ -2655,6 +2655,7 @@ dependencies = [
 name = "obscura-isolation"
 version = "0.3.0"
 dependencies = [
+ "libc",
  "obscura-ssrf",
  "serde",
  "serde_json",
@@ -2846,12 +2847,14 @@ dependencies = [
  "futures",
  "libc",
  "obscura-control-plane",
+ "obscura-isolation",
  "obscura-scheduler",
  "obscura-supervisor",
  "obscura-telemetry",
  "obscura-worker",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

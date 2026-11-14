@@ -3,12 +3,18 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    obscura_telemetry::init_tracing("submit_job", &std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "http://otel-collector:4317".to_string()));
+    obscura_telemetry::init_tracing(
+        "submit_job",
+        &std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
+    );
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let secret = std::env::var("OBSCURA_SERVICE_BOOTSTRAP_SECRET").expect("secret");
     let cp = ControlPlane::connect(&db_url, 5).await?;
     cp.migrate().await?;
-    let tenant = cp.create_tenant(&format!("phase6-verify-{}", uuid::Uuid::new_v4())).await?;
+    let tenant = cp
+        .create_tenant(&format!("phase6-verify-{}", uuid::Uuid::new_v4()))
+        .await?;
     let tenant_id = tenant.tenant_id;
     let principal = cp.service_principal("verifier", &secret)?;
     let job = cp

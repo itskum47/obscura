@@ -2,14 +2,30 @@
 # Run: cargo deny --all-features check --config deny.toml advisories bans licenses sources
 
 [advisories]
-# Real vulnerabilities fail the build. The advisories below are *unmaintained*
-# notices for transitive crates with no available fix; they are explicitly
-# accepted until the upstream parents drop them.
+# Real vulnerabilities fail the build. The advisories below are explicitly reviewed
+# and accepted exceptions for transitive dependencies with no upstream fix available:
 ignore = [
     "RUSTSEC-2025-0057", # fxhash unmaintained, transitive via selectors
     "RUSTSEC-2024-0436", # paste unmaintained, transitive via v8
     "RUSTSEC-2026-0206", # rustybuzz unmaintained, transitive via the pinned cosmic-text
     "RUSTSEC-2026-0192", # ttf-parser unmaintained, transitive via cosmic-text and the SVG stack
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained, transitive via async-nats 0.38.0 / rustls-native-certs
+    # Transitive via async-nats 0.38.0 -> rustls 0.22 -> rustls-webpki 0.102.8.
+    # Risk analysis & reachability:
+    # 1. RUSTSEC-2026-0049 & RUSTSEC-2026-0104: CRL matching logic and empty bit string panic.
+    #    Only reachable when parsing CRLs; async-nats TLS client does not configure or evaluate
+    #    CRL distribution points.
+    # 2. RUSTSEC-2026-0098 & RUSTSEC-2026-0099: Name constraint URI and wildcard validation bugs.
+    #    Only reachable after signature verification of misissued public certificates with subtree
+    #    constraints. NATS connection uses private cluster/mTLS roots, not public WebPKI hierarchy.
+    # 3. RUSTSEC-2026-0382: Acceptance of distrusted emSign intermediates. NATS connections
+    #    connect only to private cluster brokers, never public emSign endpoints. All external
+    #    browser/web traffic is handled by reqwest/wreq using rustls-webpki 0.103.16.
+    "RUSTSEC-2026-0049",
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0382",
 ]
 
 [bans]
@@ -36,11 +52,6 @@ allow = [
 ]
 confidence-threshold = 0.8
 
-# jpeg-encoder ports libjpeg code and carries the Independent JPEG Group
-# license in addition to MIT OR Apache-2.0. Allow IJG for that crate only.
-[[licenses.exceptions]]
-allow = ["IJG"]
-crate = "jpeg-encoder"
 
 [sources]
 unknown-registry = "deny"

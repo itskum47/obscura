@@ -85,7 +85,7 @@ pub struct ObscuraElemName<'a> {
 
 impl<'a> fmt::Debug for ObscuraElemName<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", &*self.name)
+        write!(f, "{:?}", *self.name)
     }
 }
 

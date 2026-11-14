@@ -8,6 +8,23 @@ async fn main() {
         libc::prctl(1, 9); // PR_SET_PDEATHSIG = 1, SIGKILL = 9
     }
 
+    // Apply OS-level process sandboxing based on environment profile before signaling readiness
+    let profile = std::env::var("OBSCURA_ISOLATION_PROFILE")
+        .ok()
+        .and_then(|p| match p.to_lowercase().as_str() {
+            "untrusted" => Some(obscura_isolation::IsolationProfile::Untrusted),
+            "hardened" => Some(obscura_isolation::IsolationProfile::Hardened),
+            "standard" => Some(obscura_isolation::IsolationProfile::Standard),
+            _ => None,
+        })
+        .unwrap_or(obscura_isolation::IsolationProfile::Standard);
+
+    let policy = obscura_isolation::IsolationPolicy::for_profile(profile);
+    if let Err(e) = policy.apply_process_sandbox() {
+        eprintln!("Failed to initialize worker sandbox: {e}");
+        std::process::exit(1);
+    }
+
     // Signal readiness to the supervisor before entering the request loop.
     use std::io::Write;
     let _ = writeln!(std::io::stdout(), "{{\"ready\":true}}");

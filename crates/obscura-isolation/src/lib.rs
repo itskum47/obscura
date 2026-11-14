@@ -1,5 +1,13 @@
 //! Runtime isolation policies, resource quotas, and security boundaries.
 
+pub mod capabilities;
+pub mod linux;
+pub mod macos;
+
+pub use capabilities::PlatformCapabilities;
+pub use linux::{apply_linux_sandbox, LandlockRule, LinuxSandboxConfig};
+pub use macos::{apply_darwin_sandbox, DarwinSandboxConfig};
+
 use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
@@ -24,6 +32,15 @@ pub enum IsolationError {
 
     #[error("Internal panic trapped inside isolation boundary: {0}")]
     TrappedPanic(String),
+
+    #[error("OS-level sandbox initialization failed: {0}")]
+    SandboxInitializationFailed(String),
+
+    #[error("Unsupported platform for requested isolation primitive: {0}")]
+    UnsupportedPlatform(String),
+
+    #[error("Untrusted workload profile rejected: host platform does not satisfy required kernel containment: {0}")]
+    UntrustedProfileForbiddenOnPlatform(String),
 }
 
 /// Pre-configured security profiles.
@@ -169,6 +186,48 @@ impl IsolationPolicy {
             IsolationError::TrappedPanic(msg.to_string())
         })
     }
+
+    /// Enforces kernel-level OS containment for this process based on the configured profile and host capabilities.
+    pub fn apply_process_sandbox(&self) -> Result<(), IsolationError> {
+        let caps = PlatformCapabilities::probe();
+
+        if self.profile == IsolationProfile::Untrusted && !caps.is_production_safe_for_untrusted {
+            return Err(IsolationError::UntrustedProfileForbiddenOnPlatform(
+                format!("Host platform ({}) lacks required kernel sandboxing primitives (user namespaces, landlock, seccomp). Details: {}", caps.os, caps.summary()),
+            ));
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let config = LinuxSandboxConfig {
+                unshare_user: caps.has_user_namespaces,
+                unshare_pid: caps.has_pid_namespaces,
+                unshare_net: caps.has_net_namespaces,
+                restrict_filesystem: caps.has_landlock,
+                enable_seccomp: caps.has_seccomp,
+                cgroup_limit_memory_mb: self.max_memory_mb,
+                cgroup_limit_pids: Some(match self.profile {
+                    IsolationProfile::Untrusted => 16,
+                    IsolationProfile::Hardened => 32,
+                    IsolationProfile::Standard => 64,
+                }),
+                ..Default::default()
+            };
+            apply_linux_sandbox(&config)?;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let config = DarwinSandboxConfig {
+                rlimit_as_mb: self.max_memory_mb,
+                rlimit_nofile: Some(256),
+                seatbelt_profile: None,
+            };
+            apply_darwin_sandbox(&config)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -181,8 +240,10 @@ mod tests {
         let err = policy.validate_url("file:///etc/passwd").unwrap_err();
         assert_eq!(err, IsolationError::FileAccessBlocked);
 
-        let mut allowed = IsolationPolicy::default();
-        allowed.allow_file_access = true;
+        let allowed = IsolationPolicy {
+            allow_file_access: true,
+            ..Default::default()
+        };
         assert!(allowed.validate_url("file:///tmp/test.html").is_ok());
     }
 
@@ -252,5 +313,43 @@ mod tests {
         } else {
             panic!("Expected TrappedPanic error");
         }
+    }
+
+    #[test]
+    fn test_platform_capabilities_detection() {
+        let caps = PlatformCapabilities::probe();
+        assert!(!caps.os.is_empty());
+        assert!(!caps.arch.is_empty());
+        let summary = caps.summary();
+        assert!(summary.contains("OS:"));
+        assert!(summary.contains("ProductionUntrustedSafe:"));
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(caps.os, "macos");
+            assert!(caps.has_seatbelt);
+            assert!(!caps.is_production_safe_for_untrusted);
+        }
+    }
+
+    #[test]
+    fn test_sandbox_untrusted_enforcement() {
+        let caps = PlatformCapabilities::probe();
+        let policy = IsolationPolicy::for_profile(IsolationProfile::Untrusted);
+
+        if !caps.is_production_safe_for_untrusted {
+            let res = policy.apply_process_sandbox();
+            assert!(matches!(
+                res,
+                Err(IsolationError::UntrustedProfileForbiddenOnPlatform(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn test_sandbox_standard_policy_application() {
+        let policy = IsolationPolicy::for_profile(IsolationProfile::Standard);
+        let res = policy.apply_process_sandbox();
+        assert!(res.is_ok());
     }
 }

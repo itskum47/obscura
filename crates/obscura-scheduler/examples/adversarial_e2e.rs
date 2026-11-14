@@ -78,6 +78,23 @@ fn check_process_alive(pid: u32) -> bool {
             return false;
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+        {
+            if !out.status.success() {
+                return false;
+            }
+            let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if state.is_empty() || state.starts_with('Z') {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
     unsafe {
         let res = libc::kill(pid as i32, 0);
         res == 0
@@ -95,6 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let bootstrap_secret = std::env::var("OBSCURA_SERVICE_BOOTSTRAP_SECRET")
         .unwrap_or_else(|_| "phase5-11-integration-secret".to_string());
+    let metrics_token = std::env::var("OBSCURA_METRICS_TOKEN")
+        .unwrap_or_else(|_| "f5-adversarial-metrics-token".to_string());
+    std::env::set_var("OBSCURA_METRICS_TOKEN", &metrics_token);
 
     let root_dir = std::env::current_dir()?;
     let worker_bin = root_dir.join("target/release/obscura-runtime-worker");
@@ -143,6 +163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_a)
         .env("OBSCURA_WORKER_NAME", &name_a)
         .env("OBSCURA_ALLOW_PRIVATE_NETWORK", "true")
@@ -157,6 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_b)
         .env("OBSCURA_WORKER_NAME", &name_b)
         .env("OBSCURA_ALLOW_PRIVATE_NETWORK", "true")
@@ -456,6 +480,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_c)
         .env("OBSCURA_WORKER_NAME", &name_c)
         .env("OBSCURA_LEASE_TTL_SECS", "3")
@@ -567,9 +593,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify Job 4 transitioned to 'failed' and error code is 'LEASE_LOST'
-    let final_j4 = cp.get_job_internal(job4.job_id, tenant_id).await?;
-    println!("Job 4 final status: {}", final_j4.status);
-    assert_eq!(final_j4.status, "failed", "Job 4 status must be 'failed'");
+    let mut final_status = String::new();
+    for _ in 0..25 {
+        let j4 = cp.get_job_internal(job4.job_id, tenant_id).await?;
+        final_status = j4.status;
+        if final_status == "failed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    println!("Job 4 final status: {}", final_status);
+    assert_eq!(final_status, "failed", "Job 4 status must be 'failed'");
 
     let error_code: Option<String> = sqlx::query_scalar(
         "SELECT error_code FROM job_attempts WHERE job_id = $1 ORDER BY started_at DESC LIMIT 1",
@@ -620,6 +654,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_d)
         .env("OBSCURA_WORKER_NAME", &name_d)
         .env("OBSCURA_LEASE_TTL_SECS", "30")
@@ -734,6 +770,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_f)
         .env("OBSCURA_WORKER_NAME", &name_f)
         .env("OBSCURA_LEASE_TTL_SECS", "3")
@@ -749,6 +787,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .env("NATS_URL", &nats_url)
         .env("OBSCURA_WORKER_BIN", &worker_bin)
         .env("OBSCURA_SERVICE_BOOTSTRAP_SECRET", &bootstrap_secret)
+        .env("OBSCURA_METRICS_TOKEN", &metrics_token)
+        .env("OBSCURA_METRICS_PORT", "0")
         .env("NATS_CONSUMER_NAME", &cname_g)
         .env("OBSCURA_WORKER_NAME", &name_g)
         .env("OBSCURA_ALLOW_PRIVATE_NETWORK", "true")

@@ -1932,7 +1932,7 @@ impl PreparedRender {
         out.insert(
             "letter-spacing",
             match style.letter_spacing.unwrap_or(0.0) {
-                value if value == 0.0 => "normal".to_string(),
+                0.0 => "normal".to_string(),
                 value => css_px(value),
             },
         );
@@ -3249,11 +3249,9 @@ pub fn prepare_dom_with_retained_styles_with_animation_state(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let sampled_animation_mutations = sample_changed
-        .then(|| {
+    let sampled_animation_mutations = if sample_changed { {
             retained_animation_restyle_mutations(tree, &previous.layout.styles, animation_timeline)
-        })
-        .unwrap_or_default();
+        } } else { Default::default() };
     let animation_mutations;
     let mutations = if sampled_animation_mutations.is_empty() && seed_animation_mutations.is_empty()
     {
@@ -4944,7 +4942,7 @@ fn paint_laid_dom_scrolled(
         });
         let element_clip_mask = combined_clip_mask
             .as_ref()
-            .or_else(|| ancestor_clip_mask.as_deref());
+            .or(ancestor_clip_mask.as_deref());
         let background_mask = element_clip_mask;
         // A linear-gradient background (heavily used by modern hero sections);
         // without this it paints white. Takes precedence over a solid color.
@@ -5228,7 +5226,7 @@ fn paint_laid_dom_scrolled(
                         Some(alt) if !alt.trim().is_empty() => {
                             draw_text(
                                 &mut pixmap,
-                                &alt,
+                                alt,
                                 rect.x,
                                 rect.y,
                                 [0, 0, 0, 255],
@@ -5307,7 +5305,7 @@ fn paint_laid_dom_scrolled(
                     markup.as_bytes(),
                     rect.width as u32,
                     rect.height as u32,
-                    &svg_fonts,
+                    svg_fonts,
                 ) {
                     let mut mask = element_clip_mask.cloned();
                     if has_radius {
@@ -7156,7 +7154,7 @@ fn selected_option_label(tree: &DomTree, select: obscura_dom::tree::NodeId) -> O
         };
         if option
             .as_element()
-            .map_or(true, |name| name.local.as_ref() != "option")
+            .is_none_or(|name| name.local.as_ref() != "option")
         {
             continue;
         }
@@ -7860,6 +7858,7 @@ fn fetch_bytes_with_kind(
     cache.get_or_load(&resolved, is_font)
 }
 
+#[allow(dead_code)]
 fn fetch_profiled_image_bytes(
     src: &str,
     base_url: Option<&str>,
@@ -8161,7 +8160,7 @@ fn font_face_declaration<'a>(face: &'a str, name: &str) -> Option<&'a str> {
                 .eq_ignore_ascii_case(name)
                 .then_some(value.trim())
         })
-        .last()
+        .next_back()
 }
 
 fn font_face_family(face: &str) -> Option<String> {
@@ -8475,7 +8474,7 @@ fn raster_to_pixmap(bytes: &[u8], w: u32, h: u32) -> Option<Pixmap> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let resized = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
     let mut raw = resized.into_raw();
-    for pixel in raw.chunks_exact_mut(4) {
+    for pixel in raw.as_chunks_mut::<4>().0 {
         let a = pixel[3] as u32;
         pixel[0] = ((pixel[0] as u32 * a) / 255) as u8;
         pixel[1] = ((pixel[1] as u32 * a) / 255) as u8;
@@ -8529,9 +8528,11 @@ fn paint_linear_gradient(
     if let Some(shader) =
         LinearGradient::new(start, end, gs, SpreadMode::Pad, Transform::identity())
     {
-        let mut paint = Paint::default();
-        paint.shader = shader;
-        paint.anti_alias = true;
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
         pixmap.fill_path(
             path,
             &paint,
@@ -8665,9 +8666,11 @@ fn paint_linear_gradient_layer(
     if let Some(shader) =
         LinearGradient::new(start, end, gradient_stops, spread, Transform::identity())
     {
-        let mut paint = Paint::default();
-        paint.shader = shader;
-        paint.anti_alias = true;
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
         pixmap.fill_path(
             path,
             &paint,
@@ -8824,9 +8827,11 @@ fn paint_radial_gradient(
         SpreadMode::Pad,
         gradient_transform,
     ) {
-        let mut paint = Paint::default();
-        paint.shader = shader;
-        paint.anti_alias = true;
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
         pixmap.fill_path(
             path,
             &paint,
@@ -8982,14 +8987,16 @@ fn paint_background_gradient_layers(
                         .resolve(origin_rect.height - tile_size.1);
                 let repeats = style.background_repeat.unwrap_or((true, true));
                 if repeats == (true, true) {
-                    let mut paint = Paint::default();
-                    paint.shader = Pattern::new(
-                        tile.as_ref(),
-                        SpreadMode::Repeat,
-                        FilterQuality::Nearest,
-                        1.0,
-                        Transform::from_translate(tile_x, tile_y),
-                    );
+                    let paint = Paint {
+                        shader: Pattern::new(
+                            tile.as_ref(),
+                            SpreadMode::Repeat,
+                            FilterQuality::Nearest,
+                            1.0,
+                            Transform::from_translate(tile_x, tile_y),
+                        ),
+                        ..Paint::default()
+                    };
                     pixmap.fill_path(path, &paint, FillRule::Winding, Transform::identity(), clip);
                     return;
                 }
@@ -10479,7 +10486,7 @@ fn paint_canvas_surface(
     // the live V8 backing directly—there is no JS-to-Rust surface copy on each
     // Canvas2D operation.
     let mut premultiplied = surface.rgba.to_vec();
-    for pixel in premultiplied.chunks_exact_mut(4) {
+    for pixel in premultiplied.as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as u32;
         pixel[0] = ((pixel[0] as u32 * alpha + 127) / 255) as u8;
         pixel[1] = ((pixel[1] as u32 * alpha + 127) / 255) as u8;

@@ -733,14 +733,14 @@ fn nth_of_selector(arguments: &str) -> Option<&str> {
 
 fn compound_local_name(compound: &str) -> Option<String> {
     let chars = compound.trim().chars().collect::<Vec<_>>();
-    let index;
-    if chars.first() == Some(&'|') {
-        index = 1;
+    
+    let index = if chars.first() == Some(&'|') {
+        1
     } else if chars.first() == Some(&'*') {
         if chars.get(1) != Some(&'|') {
             return None;
         }
-        index = 2;
+        2
     } else {
         let (first, end) = consume_css_identifier(&chars, 0);
         if first.is_empty() {
@@ -749,8 +749,8 @@ fn compound_local_name(compound: &str) -> Option<String> {
         if chars.get(end) != Some(&'|') {
             return Some(first.to_ascii_lowercase());
         }
-        index = end + 1;
-    }
+        end + 1
+    };
     if chars.get(index) == Some(&'*') {
         return None;
     }
@@ -2252,7 +2252,7 @@ impl<'a> ContainerQueryEvaluator<'a> {
                 let name_matches = query
                     .name
                     .as_ref()
-                    .map_or(true, |name| container.names.iter().any(|item| item == name));
+                    .is_none_or(|name| container.names.iter().any(|item| item == name));
                 if supports_axis && name_matches {
                     let axis_available = match container.available_type {
                         crate::ContainerType::Normal => {
@@ -5383,8 +5383,8 @@ fn normalized_keyframe_offsets(stops: &[KeyframeStop]) -> Vec<(f32, &KeyframeSto
         let from = offsets[start].unwrap();
         let to = offsets[end].unwrap();
         let span = (end - start) as f32;
-        for missing in index..end {
-            offsets[missing] = Some(from + (to - from) * (missing - start) as f32 / span);
+        for (step, slot) in offsets[index..end].iter_mut().enumerate() {
+            *slot = Some(from + (to - from) * (step + 1) as f32 / span);
         }
         index = end + 1;
     }
@@ -5461,9 +5461,7 @@ pub(crate) fn substitute_var_value(
                 _ => {}
             }
         }
-        let Some(end) = end else {
-            return None;
-        };
+        let end = end?;
         let inner = &after[..end];
         let (name, fallback) = match inner.split_once(',') {
             Some((n, f)) => (n.trim(), Some(f.trim())),
@@ -5574,7 +5572,7 @@ fn extract_content(
         } else if value
             .trim_start()
             .get(..4)
-            .map_or(false, |prefix| prefix.eq_ignore_ascii_case("url("))
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("url("))
         {
             // An image-valued content declaration supersedes any earlier
             // string declaration. The image itself is retained on
@@ -5597,7 +5595,6 @@ fn generated_content_with_zero_counters(items: &[crate::GeneratedContentItem]) -
             }
             crate::GeneratedContentItem::Counters {
                 style,
-                separator: _,
                 ..
             } => text.push_str(&format_counter_value(0, *style)),
         }
@@ -6883,103 +6880,103 @@ fn single_media_query_applies_for_viewport(
 
     // Width constraints, both `min-width:`/`max-width:` and the modern range
     // forms `width>=Npx` / `(Npx<=width)`.
-    if let Some(px) = extract_length(&compact, "max-width:", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "max-width:", viewport, LengthAxis::Width) {
         if viewport_w > px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "min-width:", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "min-width:", viewport, LengthAxis::Width) {
         if viewport_w < px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "width<=", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "width<=", viewport, LengthAxis::Width) {
         if viewport_w > px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "width>=", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "width>=", viewport, LengthAxis::Width) {
         if viewport_w < px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "width>", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "width>", viewport, LengthAxis::Width) {
         if viewport_w <= px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "width<", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length(compact, "width<", viewport, LengthAxis::Width) {
         if viewport_w >= px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, "<=width", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length_before(compact, "<=width", viewport, LengthAxis::Width) {
         if viewport_w < px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, "<width", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length_before(compact, "<width", viewport, LengthAxis::Width) {
         if viewport_w <= px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, ">=width", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length_before(compact, ">=width", viewport, LengthAxis::Width) {
         if viewport_w > px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, ">width", viewport, LengthAxis::Width) {
+    if let Some(px) = extract_length_before(compact, ">width", viewport, LengthAxis::Width) {
         if viewport_w >= px {
             return false;
         }
     }
 
-    if let Some(px) = extract_length(&compact, "max-height:", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "max-height:", viewport, LengthAxis::Height) {
         if viewport_h > px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "min-height:", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "min-height:", viewport, LengthAxis::Height) {
         if viewport_h < px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "height<=", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "height<=", viewport, LengthAxis::Height) {
         if viewport_h > px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "height>=", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "height>=", viewport, LengthAxis::Height) {
         if viewport_h < px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "height>", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "height>", viewport, LengthAxis::Height) {
         if viewport_h <= px {
             return false;
         }
     }
-    if let Some(px) = extract_length(&compact, "height<", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length(compact, "height<", viewport, LengthAxis::Height) {
         if viewport_h >= px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, "<=height", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length_before(compact, "<=height", viewport, LengthAxis::Height) {
         if viewport_h < px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, "<height", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length_before(compact, "<height", viewport, LengthAxis::Height) {
         if viewport_h <= px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, ">=height", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length_before(compact, ">=height", viewport, LengthAxis::Height) {
         if viewport_h > px {
             return false;
         }
     }
-    if let Some(px) = extract_length_before(&compact, ">height", viewport, LengthAxis::Height) {
+    if let Some(px) = extract_length_before(compact, ">height", viewport, LengthAxis::Height) {
         if viewport_h >= px {
             return false;
         }

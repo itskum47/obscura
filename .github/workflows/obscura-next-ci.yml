@@ -34,11 +34,8 @@ jobs:
       - name: Workspace Compilation & Target Check
         run: cargo check --workspace --all-targets
 
-      - name: Enforce Dependency Policies (bans, licenses, sources)
-        run: cargo deny check bans licenses sources
-
-      - name: Audit Dependency Security Advisories
-        run: cargo deny check advisories || echo "::warning::Advisories detected in transitive dependencies (documented in CI_COVERAGE_MATRIX.md)"
+      - name: Enforce Dependency Policies (bans, licenses, sources, advisories)
+        run: cargo deny check bans licenses sources advisories
 
   test:
     name: Engine Unit Tests & Security Regression
@@ -75,6 +72,7 @@ jobs:
             -p obscura-cdp \
             -p obscura-js \
             -p obscura-mcp \
+            -p obscura-render \
             -p obscura-cli \
             -p obscura
 
@@ -135,9 +133,8 @@ jobs:
           DATABASE_URL: postgres://postgres:obscura@127.0.0.1:5432/obscura
           NATS_URL: nats://127.0.0.1:4222
           OBSCURA_SERVICE_BOOTSTRAP_SECRET: phase5-11-integration-secret
-          OBSCURA_ALLOW_PRIVATE_NETWORK: "true"
         run: |
-          cargo nextest run -p obscura-control-plane -p obscura-scheduler
+          cargo nextest run -p obscura-control-plane -p obscura-scheduler -p obscura-worker-agent
 
       - name: Upload Service Test Failure Logs
         if: failure()
