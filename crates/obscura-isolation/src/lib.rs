@@ -5,7 +5,10 @@ pub mod linux;
 pub mod macos;
 
 pub use capabilities::PlatformCapabilities;
-pub use linux::{apply_linux_sandbox, LandlockRule, LinuxSandboxConfig};
+pub use linux::{
+    apply_linux_sandbox, apply_linux_sandbox_with_driver, DefaultLinuxSyscallDriver, LandlockRule,
+    LinuxSandboxConfig, LinuxSyscallDriver, MockLinuxSyscallDriver,
+};
 pub use macos::{apply_darwin_sandbox, DarwinSandboxConfig};
 
 use std::net::IpAddr;
@@ -199,19 +202,22 @@ impl IsolationPolicy {
 
         #[cfg(target_os = "linux")]
         {
+            let is_untrusted = self.profile == IsolationProfile::Untrusted;
             let config = LinuxSandboxConfig {
-                unshare_user: caps.has_user_namespaces,
-                unshare_pid: caps.has_pid_namespaces,
-                unshare_net: caps.has_net_namespaces,
-                restrict_filesystem: caps.has_landlock,
-                enable_seccomp: caps.has_seccomp,
+                unshare_user: is_untrusted || caps.has_user_namespaces,
+                unshare_pid: is_untrusted || caps.has_pid_namespaces,
+                unshare_net: is_untrusted || caps.has_net_namespaces,
+                restrict_filesystem: is_untrusted || caps.has_landlock,
+                allowed_paths: LinuxSandboxConfig::default_allowed_paths(),
+                enable_seccomp: is_untrusted || caps.has_seccomp,
+                require_tsync: is_untrusted,
                 cgroup_limit_memory_mb: self.max_memory_mb,
                 cgroup_limit_pids: Some(match self.profile {
                     IsolationProfile::Untrusted => 16,
                     IsolationProfile::Hardened => 32,
                     IsolationProfile::Standard => 64,
                 }),
-                ..Default::default()
+                strict_resource_limits: is_untrusted,
             };
             apply_linux_sandbox(&config)?;
         }

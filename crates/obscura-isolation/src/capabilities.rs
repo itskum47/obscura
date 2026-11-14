@@ -84,7 +84,9 @@ impl PlatformCapabilities {
         // Check for unified cgroups v2
         let has_cgroups_v2 = Path::new("/sys/fs/cgroup/cgroup.controllers").exists();
 
-        let is_safe = has_user_ns && has_pid_ns && has_net_ns && (has_landlock || has_seccomp);
+        // Mandatory kernel isolation for untrusted workloads requires:
+        // user namespaces, PID namespaces, network namespaces, Landlock LSM filesystem restriction, AND Seccomp-BPF.
+        let is_safe = has_user_ns && has_pid_ns && has_net_ns && has_landlock && has_seccomp;
 
         Self {
             os: "linux".to_string(),
