@@ -351,3 +351,23 @@ jobs:
           path: ${{ runner.temp }}/obscura-ci-results
           if-no-files-found: warn
           retention-days: 7
+
+  windows:
+    name: PR / Windows Installer
+    needs: policy
+    if: >-
+      !cancelled() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (needs.policy.result == 'success' && needs.policy.outputs.runtime == 'true'))
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout merge result
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Run Windows installer test suite
+        shell: pwsh
+        run: |
+          ./tests/installer_test.ps1

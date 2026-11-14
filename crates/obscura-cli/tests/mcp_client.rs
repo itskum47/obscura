@@ -294,7 +294,8 @@ fn test_tools_list() {
     let mut c = McpClient::spawn();
     let resp = c.call("tools/list", serde_json::json!({}));
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    assert!(!tools.is_empty());
+    assert_eq!(tools.len(), 41, "expected exactly 41 MCP tools, found {}", tools.len());
+
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in &[
         "browser_navigate",
@@ -309,9 +310,99 @@ fn test_tools_list() {
         "browser_network_requests",
         "browser_console_messages",
         "browser_close",
+        "browser_tab_list",
+        "browser_tab_new",
+        "browser_get_cookies",
     ] {
         assert!(names.contains(expected), "missing tool: {expected}");
     }
+
+    // Verify representative tool schemas
+    let navigate_tool = tools.iter().find(|t| t["name"] == "browser_navigate").unwrap();
+    assert_eq!(navigate_tool["inputSchema"]["type"], "object");
+    assert!(navigate_tool["inputSchema"]["properties"]["url"].is_object());
+    assert_eq!(
+        navigate_tool["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("url")),
+        true
+    );
+
+    let eval_tool = tools.iter().find(|t| t["name"] == "browser_evaluate").unwrap();
+    assert_eq!(eval_tool["inputSchema"]["type"], "object");
+    assert!(eval_tool["inputSchema"]["properties"]["expression"].is_object());
+
+    let click_tool = tools.iter().find(|t| t["name"] == "browser_click").unwrap();
+    assert_eq!(click_tool["inputSchema"]["type"], "object");
+    assert!(click_tool["inputSchema"]["properties"]["ref"].is_object());
+}
+
+#[test]
+fn test_tool_call_browser_tabs_list() {
+    let mut c = McpClient::spawn();
+    let resp = c.tool("browser_tab_list", serde_json::json!({}));
+    assert!(resp.get("error").is_none(), "tool call failed: {resp}");
+    assert!(resp["result"]["content"].is_array());
+    let text = content_text(&resp);
+    assert!(!text.is_empty(), "expected tabs output, got empty text");
+}
+
+#[test]
+fn test_mcp_http_transport() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    // Pick a free ephemeral port
+    let ephemeral = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral for MCP HTTP");
+    let port = ephemeral.local_addr().unwrap().port();
+    drop(ephemeral);
+
+    let mut child = Command::new(OBSCURA)
+        .args(["mcp", "--http", "--port", &port.to_string()])
+        .env("OBSCURA_ALLOW_PRIVATE_NETWORK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn obscura mcp --http");
+
+    // Wait for server to become responsive
+    let mut connected = false;
+    let target = format!("127.0.0.1:{}", port);
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
+
+    for _ in 0..50 {
+        if let Ok(mut stream) = TcpStream::connect(&target) {
+            let req = format!(
+                "POST /mcp HTTP/1.1\r\n\
+                Host: 127.0.0.1:{}\r\n\
+                Content-Type: application/json\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\r\n\
+                {}",
+                port,
+                body.len(),
+                body
+            );
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut buf = Vec::new();
+                let _ = stream.read_to_end(&mut buf);
+                let response = String::from_utf8_lossy(&buf);
+                if response.contains("200 OK") && response.contains("protocolVersion") {
+                    connected = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(connected, "MCP HTTP transport failed to respond to JSON-RPC initialization");
 }
 
 #[test]

@@ -105,90 +105,82 @@ Want to sponsor? Email [hello@obscura.sh](mailto:hello@obscura.sh).
     </td>
 </table>
 
-## Install
+## Installation
 
-### Download
+Obscura is distributed as a standalone native binary with zero external runtime dependencies. No Chromium or Node.js required.
 
-Grab the latest binary from [Releases](https://github.com/itskum47/obscura/releases):
+### 1. One-Command Native Install
+
+#### macOS & Linux
+```bash
+curl -fsSL https://raw.githubusercontent.com/itskum47/obscura/main/install.sh | sh
+```
+*(Desired vanity endpoint: `curl -fsSL https://obscura.sh/install.sh | sh`)*
+
+#### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/itskum47/obscura/main/install.ps1 | iex
+```
+*(Desired vanity endpoint: `irm https://obscura.sh/install.ps1 | iex`)*
+
+The official installer detects your OS and architecture, verifies SHA-256 release checksums, and installs both `obscura` and `obscura-worker` to your user binary path.
+
+---
+
+### 2. Verify System Health
+
+Run the built-in diagnostic doctor to verify V8 runtime initialization, rendering engine rasterization, MCP tool registration, loopback networking, and platform isolation:
 
 ```bash
-# Linux x86_64
-curl -LO https://github.com/itskum47/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
-tar xzf obscura-x86_64-linux.tar.gz
-./obscura fetch https://example.com --eval "document.title"
-
-# Linux ARM64 (aarch64)
-curl -LO https://github.com/itskum47/obscura/releases/latest/download/obscura-aarch64-linux.tar.gz
-tar xzf obscura-aarch64-linux.tar.gz
-
-# NixOS
-nix-env -iA nixpkgs.obscura
-
-# macOS Apple Silicon
-curl -LO https://github.com/itskum47/obscura/releases/latest/download/obscura-aarch64-macos.tar.gz
-tar xzf obscura-aarch64-macos.tar.gz
-
-# macOS Intel
-curl -LO https://github.com/itskum47/obscura/releases/latest/download/obscura-x86_64-macos.tar.gz
-tar xzf obscura-x86_64-macos.tar.gz
-
-# Windows
-Download the `.zip` from the releases page and extract it manually.
+obscura doctor
 ```
 
-No Chrome, no Node.js, no dependencies. Release archives include both
-`obscura` and `obscura-worker`; keep them in the same directory for the
-parallel `scrape` command.
+```text
+================================================================================
+                           Obscura Diagnostic Doctor
+================================================================================
+Version:         0.3.0
+Binary:          ~/.local/bin/obscura
+Platform:        macos (aarch64)
+Features:        render=enabled, stealth=disabled
 
-| Archive suffix | Rendering | Stealth transport |
-|----------------|-----------|-------------------|
-| none | Yes | No |
-| `-stealth` | Yes | Yes |
-| `-no-render` | No | No |
-| `-no-render-stealth` | No | Yes |
+System & Subsystem Diagnostics:
+  [PASS] CLI Binary & Version
+  [PASS] Worker Process Binary
+  [PASS] JavaScript Engine (V8)
+  [PASS] Rendering & Layout Engine
+  [PASS] Model Context Protocol (MCP)
+  [PASS] CDP Network Loopback
+  [PASS] Storage & Cache Permissions
+  [WARN] Platform Isolation Boundaries (Darwin Seatbelt active; Linux required for multi-tenant untrusted)
 
-Linux release builds target Ubuntu 22.04 so the downloaded binary remains
-usable on common LTS servers with glibc 2.35+.
-
-### Docker
-
-```bash
-docker run -d --name obscura -p 127.0.0.1:9222:9222 \
-  -e OBSCURA_CDP_TOKEN="$(openssl rand -hex 32)" \
-  itskum47/obscura
+Summary: 7 passed, 1 notice(s), 0 failed.
+================================================================================
 ```
 
-Image on [Docker Hub](https://hub.docker.com/r/itskum47/obscura). Multi-stage build on `distroless/cc:nonroot` — no shell, no package manager, runs as uid 65532, ~57 MB compressed. A mounted `--storage-dir` must be writable by uid 65532. Publish to host loopback as above; `-p 9222:9222` exposes the port on every interface.
+---
 
-### Build from source
+### 3. Alternative Installations
 
-```bash
-git clone https://github.com/itskum47/obscura.git
-cd obscura
+- **Docker:**
+  ```bash
+  docker run -d --name obscura -p 127.0.0.1:9222:9222 itskum47/obscura
+  ```
+- **Manual Download & Checksum Verification:** See [docs/Installation.md](docs/Installation.md#4-manual-download--verification).
+- **Build from Source (Rust Cargo):** See [docs/Build-from-source.md](docs/Build-from-source.md).
 
-# Rendering
-cargo build --release -p obscura-cli --bins --features render
+---
 
-# Rendering and stealth
-cargo build --release -p obscura-cli --bins --features render,stealth
+## Developer Onboarding (6 Paths)
 
-# No rendering
-cargo build --release -p obscura-cli --bins --no-default-features
-
-# No rendering, with stealth
-cargo build --release -p obscura-cli --bins --no-default-features --features stealth
-```
-
-Requires Rust 1.75+ ([rustup.rs](https://rustup.rs)). First build takes ~5 min (V8 compiles from source, cached after).
-The stealth build also compiles BoringSSL and generates bindings, so it needs
-CMake, Clang, and the libclang/LLVM development libraries. On Ubuntu/Debian:
-
-```bash
-sudo apt-get install build-essential cmake clang libclang-dev llvm-dev
-```
-
-The rendering build uses rustls. The rendering-and-stealth build uses
-wreq/BoringSSL and therefore needs the additional build tools above.
+| Path | Command / Snippet | Docs |
+| :--- | :--- | :--- |
+| **1. CLI Browser** | `obscura fetch https://example.com --eval "document.title"` | [CLI Reference](docs/CLI-reference.md) |
+| **2. MCP for AI Agents** | `obscura mcp` (stdio or HTTP SSE for Claude/Cursor/Zed) | [MCP Onboarding](docs/mcp/Onboarding.md) |
+| **3. CDP Server** | `obscura serve --port 9222` | [CDP Guide](docs/Connect-Puppeteer-or-Playwright.md) |
+| **4. Playwright / Puppeteer**| `chromium.connectOverCDP('http://127.0.0.1:9222')` | [Playwright Guide](docs/Use-with-Playwright.md) |
+| **5. Python SDK** | `pip install obscura-next` | [Python SDK](sdk/python/README.md) |
+| **6. TypeScript SDK** | `npm install @obscura-next/client` | [TypeScript SDK](sdk/typescript/README.md) |
 
 ## Quick Start
 

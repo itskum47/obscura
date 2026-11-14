@@ -1,9 +1,58 @@
 mod batch;
+mod doctor;
+mod pool;
+
+pub use doctor::run_doctor;
 
 use std::sync::Arc;
 use std::time::Instant;
 
-mod pool;
+/// Locate the `obscura-worker` helper binary.
+///
+/// Searches:
+/// 1. Directory of the current executable (and its symlink canonical target if different).
+/// 2. Directories in the host `$PATH`.
+/// 3. Current working directory.
+pub fn resolve_worker_binary() -> Option<std::path::PathBuf> {
+    let worker_name = if cfg!(windows) {
+        "obscura-worker.exe"
+    } else {
+        "obscura-worker"
+    };
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            let candidate = parent.join(worker_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if let Ok(real_path) = std::fs::canonicalize(&exe_path) {
+            if let Some(parent) = real_path.parent() {
+                let candidate = parent.join(worker_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(worker_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let cwd_candidate = std::path::PathBuf::from(worker_name);
+    if cwd_candidate.is_file() {
+        return Some(cwd_candidate);
+    }
+
+    None
+}
 
 use clap::{Parser, Subcommand};
 use obscura_browser::{BrowserContext, Page};
@@ -240,6 +289,13 @@ enum Command {
         #[arg(long)]
         user_agent: Option<String>,
     },
+
+    /// Check system environment, platform isolation, V8 runtime, and engine health.
+    Doctor {
+        /// Output diagnostics as JSON instead of human-readable report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
@@ -298,6 +354,7 @@ fn is_quiet_command(cmd: &Option<Command>) -> bool {
         Some(Command::Fetch { quiet: true, .. })
             | Some(Command::Scrape { quiet: true, .. })
             | Some(Command::Serve { quiet: true, .. })
+            | Some(Command::Doctor { json: true })
     )
 }
 
@@ -673,6 +730,9 @@ async fn run_cli() -> anyhow::Result<()> {
             } else {
                 obscura_mcp::run(mcp_proxy, user_agent, stealth).await?;
             }
+        }
+        Some(Command::Doctor { json }) => {
+            run_doctor(json).await?;
         }
         None => {
             print_banner(args.port);
@@ -2075,22 +2135,17 @@ async fn run_parallel_scrape(
         );
     }
 
-    let worker_name = if cfg!(windows) {
-        "obscura-worker.exe"
-    } else {
-        "obscura-worker"
-    };
-    let worker_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(worker_name)))
-        .unwrap_or_else(|| std::path::PathBuf::from(worker_name));
-
-    if !worker_path.exists() {
-        anyhow::bail!(
-            "Worker binary not found at {}. Build with: cargo build --release",
-            worker_path.display()
-        );
-    }
+    let worker_path = resolve_worker_binary().ok_or_else(|| {
+        let worker_name = if cfg!(windows) {
+            "obscura-worker.exe"
+        } else {
+            "obscura-worker"
+        };
+        anyhow::anyhow!(
+            "Worker binary '{}' not found in executable directory or PATH. Build with: cargo build --release",
+            worker_name
+        )
+    })?;
 
     let eval = Arc::new(eval);
     let worker_path = Arc::new(worker_path);

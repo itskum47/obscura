@@ -2602,6 +2602,7 @@ dependencies = [
  "obscura-browser",
  "obscura-cdp",
  "obscura-dom",
+ "obscura-isolation",
  "obscura-js",
  "obscura-mcp",
  "obscura-net",
