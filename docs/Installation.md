@@ -157,11 +157,14 @@ For production deployments with persistence and authorization tokens, see [Run i
 
 ## 6. SDK Onboarding
 
+> [!NOTE]
+> The Python and TypeScript SDKs are currently provided as in-repository packages and are not yet published to public PyPI or npm registries. Install them locally from the repository root:
+
 ### Python SDK
-Install the official Python client:
+Install the local Python client in editable mode:
 
 ```bash
-pip install obscura-next
+pip install -e sdk/python
 ```
 
 Basic script:
@@ -180,10 +183,10 @@ asyncio.run(main())
 ```
 
 ### TypeScript SDK
-Install the official Node.js / TypeScript package:
+Install the local TypeScript package:
 
 ```bash
-npm install @obscura-next/client
+npm install ./sdk/typescript
 ```
 
 Basic script:
