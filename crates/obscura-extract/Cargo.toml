@@ -1,0 +1,21 @@
+[package]
+name = "obscura-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-Rust content, metadata, structured data, readability, and feed extraction engine for Obscura"
+
+[dependencies]
+obscura-dom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+roxmltree = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

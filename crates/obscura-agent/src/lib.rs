@@ -1,4 +1,24 @@
-//! Autonomous AI-agent action protocol and semantic DOM distillation for Obscura Next.
+//! Autonomous AI-agent research orchestration, execution routing, and semantic distillation for Obscura.
+
+pub mod aggregator;
+pub mod discovery;
+pub mod orchestrator;
+pub mod relevance;
+pub mod router;
+
+pub use aggregator::{
+    DetectedContradiction, EvidenceCitation, FactClaim, MultiSourceAggregator, SourceProvenance,
+    SynthesizedReport,
+};
+pub use discovery::{
+    DiscoveredSource, DiscoveryEngine, DiscoveryError, MockSearchProvider, SearchProvider,
+    UrlNormalizer,
+};
+pub use orchestrator::{
+    ResearchError, ResearchOrchestrator, ResearchOutcome, ResearchRequest,
+};
+pub use relevance::{RelevanceEvaluation, RelevanceScorer};
+pub use router::{ExecutionEngine, ExecutionRouter, RoutingDecision};
 
 use obscura_dom::{DomTree, NodeId};
 use serde::{Deserialize, Serialize};

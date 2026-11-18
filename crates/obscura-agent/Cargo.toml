@@ -3,16 +3,19 @@ name = "obscura-agent"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
-description = "Autonomous AI-agent browser action protocol and semantic DOM distillation for Obscura Next"
+description = "Autonomous AI-agent research orchestration, intelligent execution routing, and semantic distillation for Obscura"
 
 [dependencies]
 obscura-dom = { path = "../obscura-dom" }
+obscura-extract = { path = "../obscura-extract" }
+obscura-net = { path = "../obscura-net" }
 obscura-telemetry = { path = "../obscura-telemetry" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = "0.1"
+url = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-

@@ -16,6 +16,7 @@ members = [
     "crates/obscura-worker",
     "crates/obscura-supervisor",
     "crates/obscura-agent",
+    "crates/obscura-extract",
     "crates/obscura-control-plane",
     "crates/obscura-scheduler",
     "crates/obscura-worker-agent",
@@ -42,6 +43,7 @@ obscura-isolation = { path = "crates/obscura-isolation" }
 obscura-worker = { path = "crates/obscura-worker" }
 obscura-supervisor = { path = "crates/obscura-supervisor" }
 obscura-agent = { path = "crates/obscura-agent" }
+obscura-extract = { path = "crates/obscura-extract" }
 obscura-control-plane = { path = "crates/obscura-control-plane" }
 obscura-scheduler = { path = "crates/obscura-scheduler" }
 obscura-worker-agent = { path = "crates/obscura-worker-agent" }
@@ -74,6 +76,8 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
+roxmltree = "0.21"
+regex = "1.12"
 
 # Unwinding (the Rust default) is REQUIRED for the anti-panic protocol: ops wrap
 # their bodies in std::panic::catch_unwind so a panic degrades to an error return
