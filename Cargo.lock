@@ -2520,21 +2520,21 @@ dependencies = [
 
 [[package]]
 name = "obscura"
-version = "0.1.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "obscura-browser",
  "obscura-net",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "url",
 ]
 
 [[package]]
 name = "obscura-agent"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "obscura-dom",
  "obscura-telemetry",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-browser"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-cdp"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-cli"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2606,6 +2606,7 @@ dependencies = [
  "obscura-js",
  "obscura-mcp",
  "obscura-net",
+ "obscura-telemetry",
  "serde",
  "serde_json",
  "tokio",
@@ -2617,7 +2618,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-control-plane"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "async-nats",
  "chrono",
@@ -2640,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-dom"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "cssparser",
  "html5ever",
@@ -2654,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-isolation"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "libc",
  "obscura-ssrf",
@@ -2668,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-js"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2701,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-mcp"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2719,7 +2720,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-net"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "async-trait",
  "compression-codecs",
@@ -2744,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-render"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "ab_glyph",
  "base64",
@@ -2766,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-scheduler"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "async-nats",
  "chrono",
@@ -2786,11 +2787,11 @@ dependencies = [
 
 [[package]]
 name = "obscura-ssrf"
-version = "0.3.0"
+version = "0.3.0-rc1"
 
 [[package]]
 name = "obscura-supervisor"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "libc",
  "obscura-telemetry",
@@ -2805,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-telemetry"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2821,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-worker"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "libc",
  "obscura-agent",
@@ -2841,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "obscura-worker-agent"
-version = "0.3.0"
+version = "0.3.0-rc1"
 dependencies = [
  "async-nats",
  "chrono",

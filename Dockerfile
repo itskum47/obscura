@@ -12,32 +12,55 @@ WORKDIR /build
 # Cache dependency compilation by copying manifests first
 COPY Cargo.toml Cargo.lock ./
 COPY vendor/ vendor/
-COPY crates/obscura-dom/Cargo.toml       crates/obscura-dom/Cargo.toml
-COPY crates/obscura-net/Cargo.toml       crates/obscura-net/Cargo.toml
-COPY crates/obscura-browser/Cargo.toml   crates/obscura-browser/Cargo.toml
-COPY crates/obscura-cdp/Cargo.toml       crates/obscura-cdp/Cargo.toml
-COPY crates/obscura-js/Cargo.toml        crates/obscura-js/Cargo.toml
-COPY crates/obscura-mcp/Cargo.toml       crates/obscura-mcp/Cargo.toml
-COPY crates/obscura-render/Cargo.toml    crates/obscura-render/Cargo.toml
-COPY crates/obscura-cli/Cargo.toml       crates/obscura-cli/Cargo.toml
-COPY crates/obscura/Cargo.toml           crates/obscura/Cargo.toml
+COPY crates/obscura-dom/Cargo.toml          crates/obscura-dom/Cargo.toml
+COPY crates/obscura-ssrf/Cargo.toml         crates/obscura-ssrf/Cargo.toml
+COPY crates/obscura-net/Cargo.toml          crates/obscura-net/Cargo.toml
+COPY crates/obscura-browser/Cargo.toml      crates/obscura-browser/Cargo.toml
+COPY crates/obscura-cdp/Cargo.toml          crates/obscura-cdp/Cargo.toml
+COPY crates/obscura-js/Cargo.toml           crates/obscura-js/Cargo.toml
+COPY crates/obscura-mcp/Cargo.toml          crates/obscura-mcp/Cargo.toml
+COPY crates/obscura-render/Cargo.toml       crates/obscura-render/Cargo.toml
+COPY crates/obscura-cli/Cargo.toml          crates/obscura-cli/Cargo.toml
+COPY crates/obscura/Cargo.toml              crates/obscura/Cargo.toml
+COPY crates/obscura-telemetry/Cargo.toml    crates/obscura-telemetry/Cargo.toml
+COPY crates/obscura-isolation/Cargo.toml    crates/obscura-isolation/Cargo.toml
+COPY crates/obscura-worker/Cargo.toml       crates/obscura-worker/Cargo.toml
+COPY crates/obscura-supervisor/Cargo.toml   crates/obscura-supervisor/Cargo.toml
+COPY crates/obscura-agent/Cargo.toml        crates/obscura-agent/Cargo.toml
+COPY crates/obscura-control-plane/Cargo.toml crates/obscura-control-plane/Cargo.toml
+COPY crates/obscura-scheduler/Cargo.toml    crates/obscura-scheduler/Cargo.toml
+COPY crates/obscura-worker-agent/Cargo.toml crates/obscura-worker-agent/Cargo.toml
+
+# Copy build scripts and bootstrap assets required at build-time
+COPY crates/obscura-cli/build.rs            crates/obscura-cli/build.rs
+COPY crates/obscura-mcp/build.rs            crates/obscura-mcp/build.rs
+COPY crates/obscura-js/build.rs             crates/obscura-js/build.rs
+COPY crates/obscura-js/js/                  crates/obscura-js/js/
 
 # Create stub src files so cargo can resolve the dependency graph
-RUN for crate in obscura-dom obscura-net obscura-browser obscura-cdp obscura-js obscura-mcp obscura-render obscura; do \
+RUN for crate in obscura-dom obscura-ssrf obscura-net obscura-browser obscura-cdp obscura-js obscura-mcp obscura-render obscura obscura-telemetry obscura-isolation obscura-worker obscura-supervisor obscura-agent obscura-control-plane obscura-scheduler; do \
         mkdir -p crates/$crate/src && echo "// stub" > crates/$crate/src/lib.rs; \
     done && \
     mkdir -p crates/obscura-cli/src && \
     echo "fn main() {}" > crates/obscura-cli/src/main.rs && \
-    echo "fn main() {}" > crates/obscura-cli/src/worker.rs
+    echo "fn main() {}" > crates/obscura-cli/src/worker.rs && \
+    mkdir -p crates/obscura-worker/src/bin && \
+    echo "fn main() {}" > crates/obscura-worker/src/bin/worker_main.rs && \
+    echo "fn main() {}" > crates/obscura-worker/src/bin/obscura_worker.rs && \
+    mkdir -p crates/obscura-worker-agent/src && \
+    echo "fn main() {}" > crates/obscura-worker-agent/src/main.rs && \
+    mkdir -p crates/obscura-render/src/bin && \
+    echo "fn main() {}" > crates/obscura-render/src/bin/paint_file.rs
 
-RUN cargo build --release --features render --bin obscura --bin obscura-worker 2>/dev/null || true
+RUN cargo build --release --features render -p obscura-cli --bin obscura -p obscura-worker --bin obscura-worker 2>/dev/null || true
 
 ARG OBSCURA_VERSION
 
 # Copy real sources and build
 COPY crates/ crates/
 RUN echo "Building Obscura version ${OBSCURA_VERSION:-from Cargo.toml}" && \
-    touch crates/*/src/*.rs && cargo build --release --features render --bin obscura --bin obscura-worker
+    find crates -name "*.rs" -exec touch {} + 2>/dev/null || true && \
+    cargo build --release --features render -p obscura-cli --bin obscura -p obscura-worker --bin obscura-worker
 
 # ---
 

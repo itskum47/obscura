@@ -23,5 +23,10 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // Signal readiness before entering the request loop.
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{{\"ready\":true}}");
+    let _ = std::io::stdout().flush();
+
     obscura_worker::run_worker_loop().await;
 }

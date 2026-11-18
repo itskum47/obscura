@@ -566,11 +566,16 @@ impl MetricsServerConfig {
             Err(_) => {
                 let dev_mode = std::env::var("OBSCURA_DEV_MODE")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false)
-                    || std::env::var("OBSCURA_ALLOW_UNAUTHENTICATED_METRICS")
-                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                        .unwrap_or(false);
-                if dev_mode {
+                    .unwrap_or(false);
+                let allow_unauth = std::env::var("OBSCURA_ALLOW_UNAUTHENTICATED_METRICS")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if allow_unauth {
+                    Ok(Self {
+                        bind_addr,
+                        auth: MetricsAuthConfig::DevelopmentUnauthenticated,
+                    })
+                } else if dev_mode {
                     if !is_loopback(&bind_addr) {
                         Err(MetricsConfigError::NonLoopbackUnauthenticated(bind_addr))
                     } else {

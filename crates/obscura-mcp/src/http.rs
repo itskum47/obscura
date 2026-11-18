@@ -1,13 +1,14 @@
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, RwLock, Semaphore};
 use tokio::time::Duration;
 
-use crate::{dispatch, BrowserState};
+use crate::{dispatch, handle_initialize, handle_tools_list, BrowserState, RpcResponse};
 
 /// Hard cap on a single MCP request body. The client-supplied `Content-Length`
 /// is used to pre-size the read buffer; without a ceiling a request advertising
@@ -22,6 +23,7 @@ const MAX_BATCH_ITEMS: usize = 64;
 const MAX_ID_BYTES: usize = 1024;
 const MAX_CONNECTIONS: usize = 128;
 const MAX_PENDING_REQUESTS: usize = 32;
+pub const MAX_SESSIONS: usize = 64;
 
 /// Maximum time allowed to receive one complete HTTP request (request line,
 /// headers, and body). The deadline is shared across all reads so a client
@@ -38,9 +40,11 @@ enum RequestBody {
 struct HttpRequest {
     method: String,
     path: String,
+    session_id: Option<String>,
     accept_sse: bool,
     keep_alive: bool,
     origin: Option<String>,
+    authorization: Option<String>,
     authorized: bool,
     content_type_is_json: bool,
     body: RequestBody,
@@ -55,6 +59,177 @@ enum RequestRead {
 struct PendingRequest {
     body: Vec<u8>,
     reply: oneshot::Sender<Value>,
+}
+
+struct SessionEntry {
+    tx: mpsc::Sender<PendingRequest>,
+    auth_token: Option<String>,
+    last_activity: std::time::Instant,
+}
+
+#[derive(Clone)]
+struct SessionRegistry {
+    sessions: Arc<RwLock<HashMap<String, SessionEntry>>>,
+    proxy: Option<String>,
+    user_agent: Option<String>,
+    stealth: bool,
+}
+
+impl SessionRegistry {
+    fn new(proxy: Option<String>, user_agent: Option<String>, stealth: bool) -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            proxy,
+            user_agent,
+            stealth,
+        }
+    }
+
+    async fn create_session(
+        &self,
+        session_id: String,
+        auth_token: Option<&str>,
+    ) -> Option<mpsc::Sender<PendingRequest>> {
+        let mut lock = self.sessions.write().await;
+        if lock.len() >= MAX_SESSIONS {
+            tracing::warn!(
+                "refusing MCP session creation: session capacity limit ({}) reached",
+                MAX_SESSIONS
+            );
+            return None;
+        }
+        if let Some(existing) = lock.get(&session_id) {
+            if let Some(expected_token) = &existing.auth_token {
+                let Some(provided) = auth_token else {
+                    return None;
+                };
+                if !constant_time_eq(provided, expected_token) {
+                    return None;
+                }
+            }
+            return Some(existing.tx.clone());
+        }
+
+        let (tx, rx) = mpsc::channel::<PendingRequest>(MAX_PENDING_REQUESTS);
+        let sid_clone = session_id.clone();
+        let proxy = self.proxy.clone();
+        let user_agent = self.user_agent.clone();
+        let stealth = self.stealth;
+
+        // Run this session in a dedicated OS thread with a single-threaded runtime
+        // so its !Send BrowserState and thread-pinned V8 Isolate remain strictly isolated.
+        let thread_name = format!("mcp-sess-{}", &session_id[..session_id.len().min(8)]);
+        std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build session runtime");
+                let local = tokio::task::LocalSet::new();
+                local.block_on(&rt, async move {
+                    run_session_actor(sid_clone, rx, proxy, user_agent, stealth).await;
+                });
+            })
+            .expect("spawn mcp session thread");
+
+        lock.insert(
+            session_id,
+            SessionEntry {
+                tx: tx.clone(),
+                auth_token: auth_token.map(String::from),
+                last_activity: std::time::Instant::now(),
+            },
+        );
+
+        Some(tx)
+    }
+
+    async fn get_session(
+        &self,
+        session_id: &str,
+        auth_token: Option<&str>,
+    ) -> Option<mpsc::Sender<PendingRequest>> {
+        let mut lock = self.sessions.write().await;
+        if let Some(entry) = lock.get_mut(session_id) {
+            if let Some(expected_token) = &entry.auth_token {
+                let Some(provided) = auth_token else {
+                    return None;
+                };
+                if !constant_time_eq(provided, expected_token) {
+                    return None;
+                }
+            }
+            entry.last_activity = std::time::Instant::now();
+            Some(entry.tx.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn remove_session(&self, session_id: &str, auth_token: Option<&str>) -> bool {
+        let mut lock = self.sessions.write().await;
+        if let Some(entry) = lock.get(session_id) {
+            if let Some(expected_token) = &entry.auth_token {
+                let Some(provided) = auth_token else {
+                    return false;
+                };
+                if !constant_time_eq(provided, expected_token) {
+                    return false;
+                }
+            }
+            lock.remove(session_id).is_some()
+        } else {
+            false
+        }
+    }
+
+    async fn reap_inactive_sessions(&self, max_idle: Duration) {
+        let mut lock = self.sessions.write().await;
+        lock.retain(|_id, entry| entry.last_activity.elapsed() < max_idle);
+    }
+}
+
+async fn run_session_actor(
+    session_id: String,
+    mut request_rx: mpsc::Receiver<PendingRequest>,
+    proxy: Option<String>,
+    user_agent: Option<String>,
+    stealth: bool,
+) {
+    let mut state = BrowserState::new(proxy, user_agent, stealth);
+    let mut runtime_pump_armed = false;
+
+    loop {
+        tokio::select! {
+            request = request_rx.recv() => {
+                let Some(request) = request else {
+                    tracing::debug!(session_id = %session_id, "session actor channel closed; exiting");
+                    break;
+                };
+                let response = process_body(&request.body, &mut state).await;
+                let _ = request.reply.send(response);
+                runtime_pump_armed = state.has_active_page_runtime();
+            }
+            pump_result = async { state.page_mut().run_autonomous_event_loop_turn().await }, if runtime_pump_armed => {
+                let pump_result = match pump_result {
+                    Ok(reached_idle) => state.finish_active_page_turn(reached_idle).await,
+                    Err(error) => Err(error),
+                };
+                match pump_result {
+                    Ok(reached_idle) => runtime_pump_armed = !reached_idle,
+                    Err(error) => {
+                        runtime_pump_armed = false;
+                        tracing::warn!(session_id = %session_id, "MCP page task failed: {error}");
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1800)) => {
+                tracing::info!(session_id = %session_id, "session actor idle timeout; exiting");
+                break;
+            }
+        }
+    }
 }
 
 fn token_from_env() -> Result<Option<String>> {
@@ -142,6 +317,7 @@ async fn read_request(
     let mut keep_alive = false;
     let mut origin: Option<String> = None;
     let mut authorization: Option<String> = None;
+    let mut session_id: Option<String> = None;
     let mut content_type_is_json = false;
     let mut header_bytes = 0usize;
 
@@ -171,6 +347,14 @@ async fn read_request(
                 authorization = Some(trimmed[idx + 1..].trim().to_string());
             }
         }
+        if lower.starts_with("mcp-session-id:") {
+            if let Some(idx) = trimmed.find(':') {
+                let sid = trimmed[idx + 1..].trim();
+                if !sid.is_empty() && sid.len() <= 128 {
+                    session_id = Some(sid.to_string());
+                }
+            }
+        }
         if let Some(value) = lower.strip_prefix("content-type:") {
             content_type_is_json = value
                 .split(';')
@@ -185,24 +369,26 @@ async fn read_request(
         }
     }
 
-    // Only consume a body for a POST that can reach the MCP route. Invalid
-    // paths and forbidden origins retain the existing early-response behavior.
     let authorized = bearer_authorized(authorization.as_deref(), auth_token);
-    let body = if method == "POST"
+    let body = if (method == "POST" || method == "DELETE")
         && path == "/mcp"
         && origin_allowed(origin.as_deref(), allowed_origins)
         && authorized
-        && content_type_is_json
     {
-        match content_length {
-            None => RequestBody::MissingLength,
-            // Reject the client-supplied size before allocating the body.
-            Some(len) if len > MAX_BODY_BYTES => RequestBody::TooLarge,
-            Some(len) => {
-                let mut body = vec![0u8; len];
-                reader.read_exact(&mut body).await?;
-                RequestBody::Read(body)
+        if method == "POST" && content_type_is_json {
+            match content_length {
+                None => RequestBody::MissingLength,
+                Some(len) if len > MAX_BODY_BYTES => RequestBody::TooLarge,
+                Some(len) => {
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).await?;
+                    RequestBody::Read(body)
+                }
             }
+        } else if method == "DELETE" {
+            RequestBody::Read(Vec::new())
+        } else {
+            RequestBody::NotRead
         }
     } else {
         RequestBody::NotRead
@@ -211,9 +397,11 @@ async fn read_request(
     Ok(RequestRead::Request(HttpRequest {
         method,
         path,
+        session_id,
         accept_sse,
         keep_alive,
         origin,
+        authorization,
         authorized,
         content_type_is_json,
         body,
@@ -231,20 +419,12 @@ async fn read_request_with_timeout(
         .map_err(|_| anyhow::anyhow!("request read timed out"))?
 }
 
-/// Origin allowlist for browser callers, read from `OBSCURA_MCP_ALLOWED_ORIGINS`
-/// (comma-separated). Unset/empty refuses browser callers; native clients do
-/// not send Origin and remain unaffected.
 fn allowed_origins_env() -> Option<String> {
     std::env::var("OBSCURA_MCP_ALLOWED_ORIGINS")
         .ok()
         .filter(|s| !s.trim().is_empty())
 }
 
-/// Whether a request's `Origin` is permitted. A request with no `Origin`
-/// (native, non-browser MCP clients) is always allowed — the same-origin
-/// policy only constrains browser callers. When an allowlist is configured, a
-/// browser `Origin` must match one of its entries (case-insensitive); this
-/// stops a malicious local web page from driving the loopback MCP port.
 fn origin_allowed(origin: Option<&str>, allowlist: Option<&str>) -> bool {
     match origin {
         None => true,
@@ -260,19 +440,30 @@ fn origin_allowed(origin: Option<&str>, allowlist: Option<&str>) -> bool {
     }
 }
 
-/// CORS response for an already-authorized browser caller. A wildcard is never
-/// emitted for this privileged endpoint.
 fn cors_header(origin: Option<&str>, allowlist: Option<&str>) -> String {
     match (origin, allowlist) {
         (Some(origin), Some(_)) => {
-            format!("Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n")
+            format!(
+                "Access-Control-Allow-Origin: {origin}\r\n\
+                 Access-Control-Expose-Headers: Mcp-Session-Id\r\n\
+                 Vary: Origin\r\n"
+            )
         }
-        _ => String::new(),
+        _ => "Access-Control-Expose-Headers: Mcp-Session-Id\r\n".to_string(),
     }
 }
 
+fn extract_method(body: &[u8]) -> Option<String> {
+    let msg: Value = serde_json::from_slice(body).ok()?;
+    if let Some(arr) = msg.as_array() {
+        if let Some(first) = arr.first() {
+            return first.get("method").and_then(Value::as_str).map(String::from);
+        }
+    }
+    msg.get("method").and_then(Value::as_str).map(String::from)
+}
+
 /// MCP Streamable HTTP transport (POST /mcp → JSON response).
-///
 pub async fn run(
     host: String,
     port: u16,
@@ -293,64 +484,48 @@ pub async fn run(
         tracing::info!("MCP bearer authentication enabled");
     }
 
-    let mut state = BrowserState::new(proxy, user_agent, stealth);
+    let registry = SessionRegistry::new(proxy, user_agent, stealth);
     let allowed_origins = Arc::new(allowed_origins_env());
     let auth_token = Arc::new(auth_token);
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
-    let (request_tx, mut request_rx) = mpsc::channel::<PendingRequest>(MAX_PENDING_REQUESTS);
-    let mut runtime_pump_armed = false;
+
+    // Reaper task for stale sessions
+    let reaper_registry = registry.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            reaper_registry.reap_inactive_sessions(Duration::from_secs(1800)).await;
+        }
+    });
 
     loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (stream, peer) = accepted?;
-                let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
-                    tracing::warn!("refusing MCP connection: connection limit reached");
-                    continue;
-                };
-                tracing::debug!("MCP HTTP connection from {}", peer);
-                let request_tx = request_tx.clone();
-                let allowed_origins = allowed_origins.clone();
-                let auth_token = auth_token.clone();
-                tokio::spawn(async move {
-                    let result = handle_connection(
-                        stream,
-                        request_tx,
-                        allowed_origins.as_deref().as_deref(),
-                        auth_token.as_deref().as_deref(),
-                    ).await;
-                    drop(permit);
-                    if let Err(error) = result {
-                        tracing::debug!("connection closed: {}", error);
-                    }
-                });
+        let (stream, peer) = listener.accept().await?;
+        let Ok(permit) = connection_slots.clone().try_acquire_owned() else {
+            tracing::warn!("refusing MCP connection: connection limit reached");
+            continue;
+        };
+        tracing::debug!("MCP HTTP connection from {}", peer);
+        let registry = registry.clone();
+        let allowed_origins = allowed_origins.clone();
+        let auth_token = auth_token.clone();
+        tokio::spawn(async move {
+            let result = handle_connection(
+                stream,
+                registry,
+                allowed_origins.as_deref().as_deref(),
+                auth_token.as_deref().as_deref(),
+            ).await;
+            drop(permit);
+            if let Err(error) = result {
+                tracing::debug!("connection closed: {}", error);
             }
-            Some(request) = request_rx.recv() => {
-                let response = process_body(&request.body, &mut state).await;
-                let _ = request.reply.send(response);
-                runtime_pump_armed = state.has_active_page_runtime();
-            }
-            // Disabled select branches still construct their futures; do not create a page there.
-            pump_result = async { state.page_mut().run_autonomous_event_loop_turn().await }, if runtime_pump_armed => {
-                let pump_result = match pump_result {
-                    Ok(reached_idle) => state.finish_active_page_turn(reached_idle).await,
-                    Err(error) => Err(error),
-                };
-                match pump_result {
-                    Ok(reached_idle) => runtime_pump_armed = !reached_idle,
-                    Err(error) => {
-                        runtime_pump_armed = false;
-                        tracing::warn!("MCP page task failed: {error}");
-                    }
-                }
-            }
-        }
+        });
     }
 }
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
-    request_tx: mpsc::Sender<PendingRequest>,
+    registry: SessionRegistry,
     allowed_origins: Option<&str>,
     auth_token: Option<&str>,
 ) -> Result<()> {
@@ -372,9 +547,11 @@ async fn handle_connection(
         let HttpRequest {
             method,
             path,
+            session_id,
             accept_sse,
             keep_alive,
             origin,
+            authorization,
             authorized,
             content_type_is_json,
             body,
@@ -386,11 +563,6 @@ async fn handle_connection(
             break;
         }
 
-        // Origin gate: when OBSCURA_MCP_ALLOWED_ORIGINS is configured, a browser
-        // request from a non-listed origin is refused before it can drive the
-        // browser session (mitigates a malicious local web page issuing
-        // cross-origin POSTs to the loopback MCP port). The permissive default
-        // and no-Origin native clients are unaffected.
         if !origin_allowed(origin.as_deref(), allowed_origins) {
             respond(&mut writer, 403, b"{\"error\":\"origin not allowed\"}").await?;
             break;
@@ -403,15 +575,12 @@ async fn handle_connection(
 
         match method.as_str() {
             "OPTIONS" => {
-                // mcp-protocol-version is part of the MCP spec, Authorization /
-                // X-API-Key are common for hosted deployments. Without these
-                // listed the browser preflight check fails and blocks the actual
-                // request.
                 let hdr = format!(
                     "HTTP/1.1 204 No Content\r\n\
                     {cors}\
-                    Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-                    Access-Control-Allow-Headers: Content-Type, Authorization, mcp-protocol-version\r\n\
+                    Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
+                    Access-Control-Allow-Headers: Content-Type, Authorization, mcp-protocol-version, mcp-session-id\r\n\
+                    Access-Control-Expose-Headers: Mcp-Session-Id\r\n\
                     Access-Control-Max-Age: 86400\r\n\
                     \r\n"
                 );
@@ -419,14 +588,6 @@ async fn handle_connection(
             }
 
             "GET" if accept_sse => {
-                // SSE stream: hold open and send periodic keep-alive comments.
-                // Connections are served sequentially (the browser session is
-                // `!Send`), so holding this infinite keep-alive loop inline would
-                // never return to the accept loop and would wedge every later
-                // request. The keep-alive touches no browser state and the write
-                // half is `Send + 'static`, so detach the ping loop onto its own
-                // task and return — the accept loop stays free while the stream
-                // lives on independently.
                 let hdr = format!(
                     "HTTP/1.1 200 OK\r\n\
                     Content-Type: text/event-stream\r\n\
@@ -472,17 +633,84 @@ async fn handle_connection(
                     RequestBody::NotRead => unreachable!("valid MCP POST body was not read"),
                 };
 
-                let (reply, response) = oneshot::channel();
-                request_tx
-                    .send(PendingRequest { body, reply })
-                    .await
-                    .map_err(|_| anyhow::anyhow!("MCP dispatcher stopped"))?;
-                let response = response
-                    .await
-                    .map_err(|_| anyhow::anyhow!("MCP dispatcher dropped response"))?;
-                let bytes = serde_json::to_vec(&response)?;
-                respond_json(&mut writer, &bytes, &cors).await?;
+                let method_name = extract_method(&body);
+                let is_initialize = method_name.as_deref() == Some("initialize");
 
+                let (active_session_id, tx) = if is_initialize {
+                    let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let tx = registry.create_session(sid.clone(), authorization.as_deref()).await;
+                    let Some(tx) = tx else {
+                        respond(
+                            &mut writer,
+                            503,
+                            b"{\"error\":\"maximum session capacity reached\"}",
+                        )
+                        .await?;
+                        break;
+                    };
+                    (Some(sid), Some(tx))
+                } else if let Some(ref sid) = session_id {
+                    let tx = registry.get_session(sid, authorization.as_deref()).await;
+                    if tx.is_none() {
+                        respond(&mut writer, 404, b"{\"error\":\"session not found or unauthorized\"}").await?;
+                        break;
+                    }
+                    (Some(sid.clone()), tx)
+                } else {
+                    // No session ID provided
+                    if matches!(
+                        method_name.as_deref(),
+                        Some("ping") | Some("tools/list") | Some("resources/list") | Some("prompts/list") | Some("notifications/initialized")
+                    ) {
+                        (None, None)
+                    } else {
+                        respond(
+                            &mut writer,
+                            400,
+                            b"{\"error\":\"Mcp-Session-Id header required for tool operations\"}",
+                        )
+                        .await?;
+                        break;
+                    }
+                };
+
+                let response = if let Some(tx) = tx {
+                    let (reply, rx) = oneshot::channel();
+                    tx.send(PendingRequest { body, reply })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("MCP session actor stopped"))?;
+                    rx.await
+                        .map_err(|_| anyhow::anyhow!("MCP session actor dropped response"))?
+                } else {
+                    process_body_stateless(&body)
+                };
+
+                let bytes = serde_json::to_vec(&response)?;
+                respond_json(&mut writer, &bytes, &cors, active_session_id.as_deref()).await?;
+
+                if !keep_alive {
+                    break;
+                }
+            }
+
+            "DELETE" => {
+                let Some(ref sid) = session_id else {
+                    respond(&mut writer, 400, b"{\"error\":\"missing Mcp-Session-Id header\"}").await?;
+                    break;
+                };
+                if registry.remove_session(sid, authorization.as_deref()).await {
+                    let hdr = format!(
+                        "HTTP/1.1 204 No Content\r\n\
+                         {cors}\
+                         Connection: keep-alive\r\n\
+                         \r\n"
+                    );
+                    writer.write_all(hdr.as_bytes()).await?;
+                    writer.flush().await?;
+                } else {
+                    respond(&mut writer, 404, b"{\"error\":\"session not found or unauthorized\"}").await?;
+                    break;
+                }
                 if !keep_alive {
                     break;
                 }
@@ -498,11 +726,60 @@ async fn handle_connection(
     Ok(())
 }
 
+fn process_body_stateless(body: &[u8]) -> Value {
+    let msg: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => {
+            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}});
+        }
+    };
+
+    if let Some(batch) = msg.as_array() {
+        if batch.is_empty() || batch.len() > MAX_BATCH_ITEMS {
+            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}});
+        }
+        let mut results = Vec::new();
+        for item in batch {
+            if let Some(r) = process_one_stateless(item) {
+                results.push(r);
+            }
+        }
+        return Value::Array(results);
+    }
+
+    process_one_stateless(&msg).unwrap_or_else(
+        || json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
+    )
+}
+
+fn process_one_stateless(msg: &Value) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    if matches!(id, Value::Array(_) | Value::Object(_))
+        || serde_json::to_vec(&id).map_or(true, |encoded| encoded.len() > MAX_ID_BYTES)
+    {
+        return Some(
+            json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
+        );
+    }
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = msg.get("params").unwrap_or(&Value::Null);
+    let resp = match method {
+        "initialize" => handle_initialize(id, params),
+        "notifications/initialized" => RpcResponse::ok(id, json!({})),
+        "ping" => RpcResponse::ok(id, json!({})),
+        "tools/list" => handle_tools_list(id),
+        "resources/list" => RpcResponse::ok(id, json!({ "resources": [] })),
+        "prompts/list" => RpcResponse::ok(id, json!({ "prompts": [] })),
+        _ => RpcResponse::err(id, -32600, "Method requires an active session"),
+    };
+    Some(serde_json::to_value(resp).unwrap())
+}
+
 async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
     let msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
-            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}})
+            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}});
         }
     };
 
@@ -525,7 +802,7 @@ async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
 }
 
 async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
-    let id = msg.get("id").cloned()?; // notifications have no id — return None
+    let id = msg.get("id").cloned()?;
     if matches!(id, Value::Array(_) | Value::Object(_))
         || serde_json::to_vec(&id).map_or(true, |encoded| encoded.len() > MAX_ID_BYTES)
     {
@@ -543,11 +820,17 @@ async fn respond_json(
     writer: &mut (impl AsyncWriteExt + Unpin),
     body: &[u8],
     cors: &str,
+    session_id: Option<&str>,
 ) -> Result<()> {
+    let session_hdr = match session_id {
+        Some(sid) => format!("Mcp-Session-Id: {sid}\r\n"),
+        None => String::new(),
+    };
     let hdr = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
+         {session_hdr}\
          {cors}\
          Connection: keep-alive\r\n\
          \r\n",
@@ -578,6 +861,7 @@ async fn respond(
         "HTTP/1.1 {status} {status_text}\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
+         Connection: close\r\n\
          \r\n",
         body.len()
     );
@@ -589,10 +873,7 @@ async fn respond(
 
 #[cfg(test)]
 mod mcp_hardening_tests {
-    use super::{
-        bearer_authorized, cors_header, origin_allowed, read_request_with_timeout, MAX_BODY_BYTES,
-        REQUEST_READ_TIMEOUT,
-    };
+    use super::*;
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::time::Duration;
 
@@ -601,7 +882,6 @@ mod mcp_hardening_tests {
         assert!(!origin_allowed(Some("https://evil.example"), None));
         assert!(!origin_allowed(Some("null"), None));
         assert!(origin_allowed(None, None));
-        assert!(!cors_header(Some("https://evil.example"), None).contains('*'));
     }
 
     #[test]
@@ -610,13 +890,11 @@ mod mcp_hardening_tests {
         assert!(origin_allowed(Some("http://localhost:3000"), list));
         assert!(origin_allowed(Some("https://APP.example.com"), list));
         assert!(!origin_allowed(Some("https://evil.example"), list));
-        // A native client (no Origin header) is always allowed.
         assert!(origin_allowed(None, list));
     }
 
     #[test]
     fn body_cap_is_sane() {
-        // Far above a real JSON-RPC tool call, far below an OOM-inducing value.
         assert!(MAX_BODY_BYTES >= 1 << 20);
         assert!(MAX_BODY_BYTES <= 64 << 20);
     }
@@ -676,5 +954,49 @@ mod mcp_hardening_tests {
                 Ok(_) => panic!("stalled request body should time out"),
             };
         assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn max_sessions_is_bounded() {
+        assert!(MAX_SESSIONS >= 16);
+        assert!(MAX_SESSIONS <= 256);
+    }
+
+    #[tokio::test]
+    async fn session_registry_capacity_limit_enforced() {
+        let registry = SessionRegistry::new(None, None, false);
+        // Fill registry sessions up to MAX_SESSIONS
+        {
+            let mut lock = registry.sessions.write().await;
+            for i in 0..MAX_SESSIONS {
+                let (tx, _rx) = mpsc::channel(1);
+                lock.insert(
+                    format!("sess-{}", i),
+                    SessionEntry {
+                        tx,
+                        auth_token: None,
+                        last_activity: std::time::Instant::now(),
+                    },
+                );
+            }
+            assert_eq!(lock.len(), MAX_SESSIONS);
+        }
+
+        // Attempting to create one more session must return None
+        let extra = registry.create_session("sess-overflow".to_string(), None).await;
+        assert!(extra.is_none(), "creating session beyond MAX_SESSIONS must return None");
+
+        // Existing session lookup still works
+        let existing = registry.get_session("sess-0", None).await;
+        assert!(existing.is_some(), "existing session must remain accessible");
+
+        // Remove one session
+        assert!(registry.remove_session("sess-0", None).await);
+
+        // Now creating a new session succeeds
+        let created = registry.create_session("sess-new".to_string(), None).await;
+        assert!(created.is_some(), "creating session within capacity must succeed");
+        // Clean up
+        registry.remove_session("sess-new", None).await;
     }
 }

@@ -28,3 +28,16 @@ export interface SemanticNode {
 
 export type WaitUntil = 'load' | 'domcontentloaded' | 'networkidle0' | 'networkidle2';
 
+export interface ProtocolError {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+export interface WorkerResponse<T = unknown> {
+  id?: string;
+  version?: string;
+  ok: boolean;
+  result?: T;
+  error?: ProtocolError | string;
+}

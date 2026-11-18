@@ -294,9 +294,31 @@ fn test_tools_list() {
     let mut c = McpClient::spawn();
     let resp = c.call("tools/list", serde_json::json!({}));
     let tools = resp["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 41, "expected exactly 41 MCP tools, found {}", tools.len());
+    let expected_count = if cfg!(feature = "distributed") { 41 } else { 36 };
+    assert_eq!(tools.len(), expected_count, "expected exactly {} MCP tools, found {}", expected_count, tools.len());
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    if cfg!(feature = "distributed") {
+        for dist_tool in &[
+            "browser_distributed_dispatch",
+            "browser_distributed_status",
+            "browser_distributed_cancel",
+            "browser_distributed_results",
+            "browser_distributed_workers",
+        ] {
+            assert!(names.contains(dist_tool), "missing distributed tool: {dist_tool}");
+        }
+    } else {
+        for dist_tool in &[
+            "browser_distributed_dispatch",
+            "browser_distributed_status",
+            "browser_distributed_cancel",
+            "browser_distributed_results",
+            "browser_distributed_workers",
+        ] {
+            assert!(!names.contains(dist_tool), "distributed tool advertised without feature: {dist_tool}");
+        }
+    }
     for expected in &[
         "browser_navigate",
         "browser_snapshot",

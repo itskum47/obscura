@@ -118,7 +118,7 @@ impl Worker {
     }
 
     fn with_stealth(stealth: bool) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_obscura-worker"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_obscura-cli-worker"))
             .env("OBSCURA_ALLOW_PRIVATE_NETWORK", "1")
             .env("OBSCURA_STEALTH", if stealth { "1" } else { "0" })
             .env("OBSCURA_OBEY_ROBOTS", "0")

@@ -91,7 +91,9 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build no-render release binary
-        run: cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bins --no-default-features
+        run: |
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bin obscura --bin obscura-cli-worker --no-default-features
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-worker --bin obscura-worker
 
       - name: Stage no-render release binary
         shell: bash
@@ -105,7 +107,9 @@ jobs:
           fi
 
       - name: Build no-render stealth release binary
-        run: cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bins --no-default-features --features stealth
+        run: |
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bin obscura --bin obscura-cli-worker --no-default-features --features stealth
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-worker --bin obscura-worker
 
       - name: Stage no-render stealth release binary
         shell: bash
@@ -119,7 +123,9 @@ jobs:
           fi
 
       - name: Build render-enabled release binary
-        run: cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bins --features render
+        run: |
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bin obscura --bin obscura-cli-worker --features render
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-worker --bin obscura-worker
 
       - name: Stage default release binary
         shell: bash
@@ -133,7 +139,9 @@ jobs:
           fi
 
       - name: Build render-enabled stealth release binary
-        run: cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bins --features render,stealth
+        run: |
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-cli --bin obscura --bin obscura-cli-worker --features render,stealth
+          cargo build --profile release-dist --target ${{ matrix.target }} -p obscura-worker --bin obscura-worker
 
       - name: Stage stealth release binary
         shell: bash

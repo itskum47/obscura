@@ -393,7 +393,7 @@ impl LinuxSyscallDriver for DefaultLinuxSyscallDriver {
 
     #[cfg(unix)]
     fn setrlimit(&self, resource: libc::c_int, rlim: &libc::rlimit) -> Result<(), std::io::Error> {
-        let res = unsafe { libc::setrlimit(resource, rlim) };
+        let res = unsafe { libc::setrlimit(resource as _, rlim) };
         if res == 0 {
             Ok(())
         } else {
@@ -696,7 +696,7 @@ fn apply_resource_limits_with_driver(
             rlim_cur: bytes,
             rlim_max: bytes,
         };
-        if let Err(err) = driver.setrlimit(libc::RLIMIT_AS, &rlim) {
+        if let Err(err) = driver.setrlimit(libc::RLIMIT_AS as _, &rlim) {
             let os_err = err.raw_os_error();
             if config.strict_resource_limits {
                 tracing::error!(
@@ -724,7 +724,7 @@ fn apply_resource_limits_with_driver(
             rlim_cur: pids as u64,
             rlim_max: pids as u64,
         };
-        if let Err(err) = driver.setrlimit(libc::RLIMIT_NPROC, &rlim) {
+        if let Err(err) = driver.setrlimit(libc::RLIMIT_NPROC as _, &rlim) {
             let os_err = err.raw_os_error();
             if config.strict_resource_limits {
                 tracing::error!(

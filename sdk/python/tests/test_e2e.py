@@ -16,6 +16,8 @@ def _find_binary():
     """Resolve the worker binary relative to the project root."""
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     candidates = [
+        os.path.join(project_root, "target", "debug", "obscura-worker"),
+        os.path.join(project_root, "target", "release", "obscura-worker"),
         os.path.join(project_root, "target", "debug", "obscura-runtime-worker"),
         os.path.join(project_root, "target", "release", "obscura-runtime-worker"),
     ]
@@ -47,6 +49,18 @@ class TestAsyncObscuraClient:
     async def test_health(self, client):
         resp = await client.health()
         assert resp["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_correlation(self, client):
+        results = await asyncio.gather(
+            client.ping(),
+            client.health(),
+            client.ping(),
+            client.health(),
+        )
+        assert len(results) == 4
+        for r in results:
+            assert r["ok"] is True
 
     @pytest.mark.asyncio
     async def test_session_lifecycle(self, client):

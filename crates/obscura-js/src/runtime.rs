@@ -2752,9 +2752,30 @@ impl ObscuraJsRuntime {
         return_by_value: bool,
         await_promise: bool,
     ) -> Result<CdpEvaluation, String> {
+        self.start_cdp_evaluation_with_timeout(
+            expression,
+            return_by_value,
+            await_promise,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn start_cdp_evaluation_with_timeout(
+        &mut self,
+        expression: &str,
+        return_by_value: bool,
+        await_promise: bool,
+        timeout: std::time::Duration,
+    ) -> Result<CdpEvaluation, String> {
         self.begin_javascript_task();
         self.object_counter += 1;
         let oid = self.make_oid(self.object_counter);
+        let token = if !timeout.is_zero() {
+            Some(self.arm_watchdog(timeout))
+        } else {
+            None
+        };
         // Compile the script itself, not a string passed through the page's eval.
         let record = (|| {
             let mut entered = self.runtime();
@@ -2791,6 +2812,18 @@ impl ObscuraJsRuntime {
             scope.reset();
             cdp_result_record(scope, value, rejected, await_promise)
         })();
+        let fired = token.map(|t| self.disarm_watchdog(t)).unwrap_or(false);
+        if fired {
+            self.cancel_termination();
+            return Err("eval timed out".to_string());
+        }
+        let record = match record {
+            Err(e) if e.contains("execution terminated") => {
+                self.cancel_termination();
+                return Err("eval timed out".to_string());
+            }
+            other => other,
+        };
         let record = self.finish_heap_checked(record)?;
         self.pending_cdp_evaluations.insert(oid.clone(), record);
         let pending = PendingCdpEvaluation {
@@ -4174,10 +4207,14 @@ impl ObscuraJsRuntime {
         }
         match result {
             Ok(v) if !fired => self.v8_to_json(v),
-            Ok(_) => Err("eval timed out".to_string()),
+            Ok(_) => {
+                self.cancel_termination();
+                Err("eval timed out".to_string())
+            }
             Err(e) => {
                 let msg = e.to_string();
                 if fired || msg.contains("execution terminated") {
+                    self.cancel_termination();
                     Err("eval timed out".to_string())
                 } else {
                     Err(format!("JS error: {}", msg))
@@ -4412,9 +4449,19 @@ impl ObscuraJsRuntime {
             || trimmed.starts_with("let ")
             || trimmed.starts_with("const ")
             || trimmed.starts_with("if ")
+            || trimmed.starts_with("if(")
             || trimmed.starts_with("for ")
+            || trimmed.starts_with("for(")
             || trimmed.starts_with("while ")
-            || trimmed.starts_with("return ");
+            || trimmed.starts_with("while(")
+            || trimmed.starts_with("do ")
+            || trimmed.starts_with("do{")
+            || trimmed.starts_with("try ")
+            || trimmed.starts_with("try{")
+            || trimmed.starts_with("switch ")
+            || trimmed.starts_with("switch(")
+            || trimmed.starts_with("return ")
+            || trimmed.starts_with("return;");
 
         if is_multi_statement {
             format!(

@@ -5,21 +5,36 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::LocalSet;
 use tokio::time::{sleep, timeout};
 
-async fn rpc(port: u16, method: &str, params: Value) -> Value {
+async fn rpc(port: u16, method: &str, params: Value, session_id: Option<&str>) -> (Value, Option<String>) {
     timeout(Duration::from_secs(3), async {
         let body = json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params}).to_string();
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        let request = format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+        let session_hdr = match session_id {
+            Some(sid) => format!("Mcp-Session-Id: {}\r\n", sid),
+            None => String::new(),
+        };
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
+            body.len(),
+            session_hdr,
+            body
+        );
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let mut sid_out = None;
+        for line in response.lines() {
+            if let Some(val) = line.to_ascii_lowercase().strip_prefix("mcp-session-id: ") {
+                sid_out = Some(val.trim().to_string());
+            }
+        }
         let (_, body) = response.split_once("\r\n\r\n").unwrap();
         let response: Value = serde_json::from_str(body).unwrap();
         assert!(response.get("error").is_none(), "{response}");
         let result = response["result"].clone();
         assert_ne!(result["isError"], json!(true), "{result}");
-        result
+        (result, sid_out)
     }).await.expect("idle browser work must not block MCP requests")
 }
 
@@ -61,26 +76,29 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
             if TcpStream::connect(("127.0.0.1", port)).await.is_ok() { break; }
             sleep(Duration::from_millis(10)).await;
         }
-        let tabs = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}})).await;
+        let (_, sid) = rpc(port, "initialize", json!({"protocolVersion":"2024-11-05","capabilities":{}}), None).await;
+        let sid = sid.as_deref();
+
+        let (tabs, _) = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}}), sid).await;
         assert_eq!(tabs["content"][0]["text"], json!("No tabs open."), "an unarmed pump must not create a page");
         rpc(port, "tools/call", json!({"name":"browser_navigate", "arguments":{
             "url":"data:text/html,<p>Waiting</p>"
-        }})).await;
+        }}), sid).await;
         // A distant timer must remain preemptible by a new RPC, not hold the owner loop.
         rpc(port, "tools/call", json!({"name":"browser_evaluate", "arguments":{
             "expression":"(function(){globalThis.distantTimer=setTimeout(()=>{},60000);return 'armed';})()"
-        }})).await;
-        rpc(port, "ping", json!({})).await;
+        }}), sid).await;
+        rpc(port, "ping", json!({}), sid).await;
         rpc(port, "tools/call", json!({"name":"browser_evaluate", "arguments":{
             "expression":format!("(function(){{clearTimeout(distantTimer);setTimeout(()=>fetch('http://127.0.0.1:{fixture_port}/idle-callback'),30);return 'queued';}})()")
-        }})).await;
+        }}), sid).await;
 
         // No tool call pumps the page here. Only the HTTP owner can run the timer/fetch.
         let request = timeout(Duration::from_secs(3), arrived).await
             .expect("HTTP MCP must drive idle page callbacks")
             .expect("fixture request");
         assert!(request.starts_with("GET /idle-callback "), "{request}");
-        rpc(port, "ping", json!({})).await;
+        rpc(port, "ping", json!({}), sid).await;
 
         let navigation = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let navigation_port = navigation.local_addr().unwrap().port();
@@ -99,15 +117,15 @@ async fn page_callbacks_progress_without_more_http_tool_calls() {
         });
         rpc(port, "tools/call", json!({"name":"browser_evaluate", "arguments":{
             "expression":format!("(function(){{setTimeout(()=>location.href='http://127.0.0.1:{navigation_port}/landed',30);return 'queued';}})()")
-        }})).await;
+        }}), sid).await;
         timeout(Duration::from_secs(3), navigating).await.expect("idle navigation must start").unwrap();
-        rpc(port, "ping", json!({})).await;
-        let snapshot = rpc(port, "tools/call", json!({"name":"browser_snapshot", "arguments":{}})).await;
+        rpc(port, "ping", json!({}), sid).await;
+        let (snapshot, _) = rpc(port, "tools/call", json!({"name":"browser_snapshot", "arguments":{}}), sid).await;
         assert!(snapshot["content"][0]["text"].as_str().unwrap().ends_with("\n\nLanded"), "incoming RPC must not discard navigation: {snapshot}");
         navigation_task.await.unwrap();
 
-        rpc(port, "tools/call", json!({"name":"browser_close", "arguments":{}})).await;
-        let tabs = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}})).await;
+        rpc(port, "tools/call", json!({"name":"browser_close", "arguments":{}}), sid).await;
+        let (tabs, _) = rpc(port, "tools/call", json!({"name":"browser_tab_list", "arguments":{}}), sid).await;
         assert_eq!(tabs["content"][0]["text"], json!("No tabs open."), "idle driving must not reopen a closed page");
         server.abort();
     }).await;

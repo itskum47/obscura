@@ -7,48 +7,50 @@ pub use doctor::run_doctor;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Locate the `obscura-worker` helper binary.
+/// Locate the `obscura-cli-worker` helper binary.
 ///
 /// Searches:
 /// 1. Directory of the current executable (and its symlink canonical target if different).
 /// 2. Directories in the host `$PATH`.
 /// 3. Current working directory.
 pub fn resolve_worker_binary() -> Option<std::path::PathBuf> {
-    let worker_name = if cfg!(windows) {
-        "obscura-worker.exe"
+    let worker_names = if cfg!(windows) {
+        &["obscura-cli-worker.exe", "obscura-worker.exe"][..]
     } else {
-        "obscura-worker"
+        &["obscura-cli-worker", "obscura-worker"][..]
     };
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(parent) = exe_path.parent() {
-            let candidate = parent.join(worker_name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        if let Ok(real_path) = std::fs::canonicalize(&exe_path) {
-            if let Some(parent) = real_path.parent() {
+    for &worker_name in worker_names {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
                 let candidate = parent.join(worker_name);
                 if candidate.is_file() {
                     return Some(candidate);
                 }
             }
-        }
-    }
-
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join(worker_name);
-            if candidate.is_file() {
-                return Some(candidate);
+            if let Ok(real_path) = std::fs::canonicalize(&exe_path) {
+                if let Some(parent) = real_path.parent() {
+                    let candidate = parent.join(worker_name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
             }
         }
-    }
 
-    let cwd_candidate = std::path::PathBuf::from(worker_name);
-    if cwd_candidate.is_file() {
-        return Some(cwd_candidate);
+        if let Some(paths) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&paths) {
+                let candidate = dir.join(worker_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        let cwd_candidate = std::path::PathBuf::from(worker_name);
+        if cwd_candidate.is_file() {
+            return Some(cwd_candidate);
+        }
     }
 
     None
@@ -577,6 +579,39 @@ async fn run_cli() -> anyhow::Result<()> {
                 #[cfg(not(feature = "stealth"))]
                 tracing::info!("Stealth mode enabled (tracker blocking)");
             }
+
+            // Spawn telemetry/metrics server if OBSCURA_METRICS_PORT is configured
+            let _metrics_shutdown = if let Ok(port_str) = std::env::var("OBSCURA_METRICS_PORT") {
+                if let Ok(m_port) = port_str.trim().parse::<u16>() {
+                    let bind_host = if host == "0.0.0.0" { "0.0.0.0" } else { "127.0.0.1" };
+                    let bind_addr = format!("{}:{}", bind_host, m_port);
+                    let reg = obscura_telemetry::global_metrics().clone();
+                    let cfg_res = obscura_telemetry::MetricsServerConfig::from_env(&bind_addr);
+                    match cfg_res {
+                        Ok(cfg) => {
+                            let server = obscura_telemetry::MetricsServer::new(cfg, reg);
+                            match server.spawn().await {
+                                Ok((addr, shutdown_tx)) => {
+                                    tracing::info!("Telemetry/metrics server listening on {}", addr);
+                                    Some(shutdown_tx)
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to bind metrics server on {}: {}", bind_addr, e);
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Metrics server config error for {}: {}", bind_addr, e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             if workers > 1 {
                 tracing::info!("{} worker processes", workers);
@@ -1436,7 +1471,9 @@ async fn run_fetch(
         if let Some(ref expr) = eval {
             // Bound the eval by the same budget as navigation so a runaway
             // expression (infinite loop, never-settling sync work) cannot hang.
-            let result = page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs));
+            let result = page
+                .try_evaluate_with_timeout(expr, Duration::from_secs(timeout_secs))
+                .map_err(|e| anyhow::anyhow!("evaluation failed: {}", e))?;
 
             // A bare --eval (no --selector, --dump, or --screenshot) returns the
             // eval value directly, so synchronous expressions
@@ -1559,8 +1596,10 @@ async fn run_fetch(
                 });
             if eval_at_capture_boundary {
                 if let Some(ref expr) = eval {
-                    deferred_eval_output =
-                        Some(page.evaluate_with_timeout(expr, Duration::from_secs(timeout_secs)));
+                    let result = page
+                        .try_evaluate_with_timeout(expr, Duration::from_secs(timeout_secs))
+                        .map_err(|e| anyhow::anyhow!("evaluation failed: {}", e))?;
+                    deferred_eval_output = Some(result);
                 }
             }
             let capture_state = deferred_eval_output.as_ref().map(|_| {

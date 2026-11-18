@@ -1,22 +1,37 @@
 """
-Obscura Next Python SDK — Async and sync client for supervised worker IPC.
-Communicates with the obscura-runtime-worker binary via framed JSON over stdin/stdout.
+Obscura Next Python SDK — Async and sync client for the obscura-worker binary.
+
+Communicates with the worker via framed JSON lines over stdin/stdout.
+Protocol:
+  - On launch the worker emits {"ready":true} on stdout.
+  - Requests:  {"id":"…","version":"1.0","cmd":"…", …}
+  - Responses: {"id":"…","version":"1.0","ok":true/false,"result":…,"error":…}
 """
 
-import json
 import asyncio
-import subprocess
+import json
 import os
 import shutil
 import time
-from typing import Optional, Dict, Any, List
 import uuid
-from typing import Optional, Dict, Any
-from .models import SessionConfig, AgentAction, ActionResult, SemanticNode
+from typing import Any, Dict, Optional
 
+from .models import ActionResult, SessionConfig
+
+
+# ---------------------------------------------------------------------------
+# Binary resolution
+# ---------------------------------------------------------------------------
 
 def _resolve_worker_binary(binary_path: Optional[str] = None) -> str:
-    """Resolves the obscura-runtime-worker binary in priority order."""
+    """Resolve the *obscura-worker* binary in priority order.
+
+    1. Explicit *binary_path* argument.
+    2. ``OBSCURA_WORKER_BIN`` environment variable.
+    3. Well-known build directories relative to cwd.
+    4. ``PATH`` lookup.
+    5. Fallback (returns the argument or ``"obscura-worker"``).
+    """
     # 1. Explicit argument
     if binary_path and os.path.isfile(binary_path) and os.access(binary_path, os.X_OK):
         return binary_path
@@ -26,122 +41,224 @@ def _resolve_worker_binary(binary_path: Optional[str] = None) -> str:
     if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
         return env_bin
 
-    # 3. Build directories relative to current working directory
+    # 3. Build directories relative to cwd
     candidates = [
-        "target/debug/obscura-runtime-worker",
-        "target/release/obscura-runtime-worker",
         "target/debug/obscura-worker",
         "target/release/obscura-worker",
-        "../target/debug/obscura-runtime-worker",
-        "../target/release/obscura-runtime-worker",
+        "../target/debug/obscura-worker",
+        "../target/release/obscura-worker",
     ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return os.path.abspath(c)
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return os.path.abspath(candidate)
 
     # 4. PATH lookup
-    found = shutil.which("obscura-runtime-worker") or shutil.which("obscura-worker")
+    found = shutil.which("obscura-worker")
     if found:
         return found
 
-    # 5. Fallback (will likely fail, but gives a clear error)
-    return binary_path or "obscura-runtime-worker"
+    # 5. Fallback
+    return binary_path or "obscura-worker"
 
+
+# ---------------------------------------------------------------------------
+# Async client
+# ---------------------------------------------------------------------------
 
 class AsyncObscuraClient:
-    """Async client communicating with Obscura Next isolated runtime worker."""
-    """Async client communicating with Obscura Next isolated runtime worker.
+    """Async client for the Obscura Next worker process.
 
-    def __init__(self, binary_path: str = "obscura"):
-        self.binary_path = binary_path
-    Uses the canonical framed JSON protocol (one JSON object per line over stdin/stdout).
-    Every request carries an `id` for correlation and a `session_id` for session-scoped commands.
+    Usage::
+
+        client = AsyncObscuraClient()
+        await client.start()
+        await client.create_session()
+        result = await client.navigate("https://example.com")
+        await client.close()
     """
 
-    def __init__(self, binary_path: Optional[str] = None, default_session_id: Optional[str] = None):
+    def __init__(
+        self,
+        binary_path: Optional[str] = None,
+        default_session_id: Optional[str] = None,
+    ):
         self.binary_path = _resolve_worker_binary(binary_path)
         self.default_session_id = default_session_id or f"py-session-{uuid.uuid4().hex[:12]}"
         self._proc: Optional[asyncio.subprocess.Process] = None
+        self._lock = asyncio.Lock()
         self._req_counter = 0
+
+    # -- helpers -------------------------------------------------------------
 
     def _next_id(self) -> str:
         self._req_counter += 1
         return f"py-{self._req_counter}"
 
-    async def start(self):
-        """Starts the worker process with framed IPC."""
-        """Starts the worker process with framed IPC (no subcommand)."""
+    def _sid(self, session_id: Optional[str]) -> str:
+        return session_id if session_id is not None else self.default_session_id
+
+    # -- lifecycle -----------------------------------------------------------
+
+    async def start(self, handshake_timeout: float = 10.0) -> None:
+        """Launch the worker process and consume the ``{"ready":true}`` handshake."""
         self._proc = await asyncio.create_subprocess_exec(
             self.binary_path,
-            "worker",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-    async def send_command(self, cmd: Dict[str, Any]) -> Dict[str, Any]:
-        """Sends a canonical protocol command and returns the parsed response."""
+        try:
+            assert self._proc.stdout is not None
+            handshake_line = await asyncio.wait_for(
+                self._proc.stdout.readline(),
+                timeout=handshake_timeout,
+            )
+            if not handshake_line:
+                raise RuntimeError("Worker process exited before sending handshake")
+            handshake = json.loads(handshake_line.decode("utf-8"))
+            if not handshake.get("ready"):
+                raise RuntimeError(f"Worker handshake failed: {handshake}")
+        except Exception:
+            if self._proc:
+                try:
+                    self._proc.kill()
+                    await self._proc.wait()
+                except Exception:
+                    pass
+                self._proc = None
+            raise
+
+    async def close(self) -> None:
+        """Send ``shutdown`` command, wait for exit, force-kill if needed."""
+        if not self._proc:
+            return
+        try:
+            await self.send_command({"cmd": "shutdown"}, timeout=3.0)
+        except Exception:
+            pass
+
+        if self._proc.stdin:
+            try:
+                self._proc.stdin.close()
+            except Exception:
+                pass
+
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self._proc.kill()
+            await self._proc.wait()
+        self._proc = None
+
+    # -- low-level protocol --------------------------------------------------
+
+    async def send_command(
+        self, cmd: Dict[str, Any], timeout: float = 30.0
+    ) -> Dict[str, Any]:
+        """Serialize *cmd* as a JSON line, send it, read the response.
+
+        Automatically assigns ``id`` and ``version`` if not present.
+        Verifies that the response ``id`` matches the request.
+        Uses an ``asyncio.Lock`` so concurrent callers are serialized.
+        """
         if not self._proc or not self._proc.stdin or not self._proc.stdout:
             raise RuntimeError("Client not connected to worker process")
+        if getattr(self._proc, "returncode", None) is not None:
+            raise RuntimeError(f"Worker process has terminated (code {self._proc.returncode})")
 
         if "id" not in cmd:
             cmd["id"] = self._next_id()
+        if "version" not in cmd:
+            cmd["version"] = "1.0"
 
-        line = json.dumps(cmd) + "\n"
-        self._proc.stdin.write(line.encode("utf-8"))
-        await self._proc.stdin.drain()
+        req_id = cmd["id"]
 
-        resp_line = await self._proc.stdout.readline()
-        if not resp_line:
-            raise RuntimeError("Worker process terminated unexpectedly")
+        async with self._lock:
+            line = json.dumps(cmd) + "\n"
+            self._proc.stdin.write(line.encode("utf-8"))
+            await self._proc.stdin.drain()
 
-        return json.loads(resp_line.decode("utf-8"))
+            try:
+                resp_line = await asyncio.wait_for(
+                    self._proc.stdout.readline(),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Command {cmd.get('cmd')} (id {req_id}) timed out after {timeout}s")
 
-    async def navigate(self, url: str, wait_until: str = "load") -> ActionResult:
-    async def ping(self) -> Dict[str, Any]:
-        """Sends a ping command to the worker."""
-        return await self.send_command({"cmd": "ping"})
+            if not resp_line:
+                raise RuntimeError("Worker process terminated unexpectedly")
 
-    async def health(self) -> Dict[str, Any]:
-        """Sends a health check command to the worker."""
-        return await self.send_command({"cmd": "health"})
+            try:
+                resp = json.loads(resp_line.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"Malformed JSON response from worker: {resp_line!r}") from e
 
-    async def create_session(self, session_id: Optional[str] = None, config: Optional[SessionConfig] = None) -> Dict[str, Any]:
-        """Creates a new browser session."""
-        sid = session_id or self.default_session_id
+        if resp.get("id") != req_id:
+            raise RuntimeError(
+                f"Response id mismatch: expected {req_id!r}, got {resp.get('id')!r}"
+            )
+
+        return resp
+
+    # -- session management --------------------------------------------------
+
+    async def create_session(
+        self,
+        session_id: Optional[str] = None,
+        config: Optional[SessionConfig] = None,
+    ) -> Dict[str, Any]:
+        """Create a new browser session."""
+        sid = self._sid(session_id)
         cmd: Dict[str, Any] = {
             "cmd": "session_create",
             "session_id": sid,
         }
         if config:
-            cmd["config"] = {
+            cfg: Dict[str, Any] = {
                 "stealth": config.stealth,
                 "timeout_ms": config.timeout_ms,
             }
             if config.proxy_url:
-                cmd["config"]["proxy_url"] = config.proxy_url
+                cfg["proxy_url"] = config.proxy_url
             if config.user_agent:
-                cmd["config"]["user_agent"] = config.user_agent
+                cfg["user_agent"] = config.user_agent
+            cmd["config"] = cfg
         return await self.send_command(cmd)
 
     async def destroy_session(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Destroys a browser session."""
-        sid = session_id or self.default_session_id
+        """Destroy a browser session."""
         return await self.send_command({
             "cmd": "session_destroy",
-            "session_id": sid,
+            "session_id": self._sid(session_id),
         })
 
-    async def navigate(self, url: str, session_id: Optional[str] = None, wait_until: str = "load", timeout_ms: Optional[int] = None) -> ActionResult:
-        """Navigates the session's page to a URL."""
-        sid = session_id or self.default_session_id
+    # -- operations ----------------------------------------------------------
+
+    async def ping(self) -> Dict[str, Any]:
+        """Send a ``ping`` command (session-less)."""
+        return await self.send_command({"cmd": "ping"})
+
+    async def health(self) -> Dict[str, Any]:
+        """Send a ``health`` check command (session-less)."""
+        return await self.send_command({"cmd": "health"})
+
+    async def navigate(
+        self,
+        url: str,
+        session_id: Optional[str] = None,
+        wait_until: str = "load",
+        timeout_ms: Optional[int] = None,
+    ) -> ActionResult:
+        """Navigate the session's page to *url*."""
+        sid = self._sid(session_id)
         t0 = time.time()
-        cmd = {"cmd": "navigate", "url": url, "waitUntil": wait_until}
         cmd: Dict[str, Any] = {
             "cmd": "navigate",
             "session_id": sid,
             "url": url,
-            "waitUntil": wait_until,
+            "wait_until": wait_until,
         }
         if timeout_ms is not None:
             cmd["timeout_ms"] = timeout_ms
@@ -155,12 +272,16 @@ class AsyncObscuraClient:
             error=resp.get("error"),
         )
 
-    async def evaluate(self, expression: str) -> ActionResult:
-    async def evaluate(self, expression: str, session_id: Optional[str] = None, await_promise: bool = True, timeout_ms: Optional[int] = None) -> ActionResult:
-        """Evaluates a JavaScript expression in the session."""
-        sid = session_id or self.default_session_id
+    async def evaluate(
+        self,
+        expression: str,
+        session_id: Optional[str] = None,
+        await_promise: bool = True,
+        timeout_ms: Optional[int] = None,
+    ) -> ActionResult:
+        """Evaluate a JavaScript expression in the session."""
+        sid = self._sid(session_id)
         t0 = time.time()
-        cmd = {"cmd": "evaluate", "expression": expression}
         cmd: Dict[str, Any] = {
             "cmd": "evaluate",
             "session_id": sid,
@@ -179,21 +300,16 @@ class AsyncObscuraClient:
             error=resp.get("error"),
         )
 
-    async def dump(self, format: str = "html") -> str:
-        cmd_name = "dump_html" if format == "html" else "dump_text"
-        resp = await self.send_command({"cmd": cmd_name})
-        return resp.get("result", "")
     async def snapshot(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Gets the accessibility snapshot of the current page."""
-        sid = session_id or self.default_session_id
+        """Get the accessibility snapshot of the current page."""
         return await self.send_command({
             "cmd": "snapshot",
-            "session_id": sid,
+            "session_id": self._sid(session_id),
         })
 
     async def click(self, selector: str, session_id: Optional[str] = None) -> ActionResult:
-        """Clicks an element matching the CSS selector."""
-        sid = session_id or self.default_session_id
+        """Click an element matching *selector*."""
+        sid = self._sid(session_id)
         t0 = time.time()
         resp = await self.send_command({
             "cmd": "click",
@@ -201,11 +317,19 @@ class AsyncObscuraClient:
             "selector": selector,
         })
         elapsed = (time.time() - t0) * 1000.0
-        return ActionResult(action="click", success=resp.get("ok", False), payload=resp.get("result"), elapsed_ms=elapsed, error=resp.get("error"))
+        return ActionResult(
+            action="click",
+            success=resp.get("ok", False),
+            payload=resp.get("result"),
+            elapsed_ms=elapsed,
+            error=resp.get("error"),
+        )
 
-    async def fill(self, selector: str, value: str, session_id: Optional[str] = None) -> ActionResult:
-        """Fills an input element matching the CSS selector with the given value."""
-        sid = session_id or self.default_session_id
+    async def fill(
+        self, selector: str, value: str, session_id: Optional[str] = None
+    ) -> ActionResult:
+        """Fill an input element matching *selector* with *value*."""
+        sid = self._sid(session_id)
         t0 = time.time()
         resp = await self.send_command({
             "cmd": "fill",
@@ -214,11 +338,19 @@ class AsyncObscuraClient:
             "value": value,
         })
         elapsed = (time.time() - t0) * 1000.0
-        return ActionResult(action="fill", success=resp.get("ok", False), payload=resp.get("result"), elapsed_ms=elapsed, error=resp.get("error"))
+        return ActionResult(
+            action="fill",
+            success=resp.get("ok", False),
+            payload=resp.get("result"),
+            elapsed_ms=elapsed,
+            error=resp.get("error"),
+        )
 
-    async def type_text(self, selector: str, text: str, session_id: Optional[str] = None) -> ActionResult:
-        """Types text into an element matching the CSS selector."""
-        sid = session_id or self.default_session_id
+    async def type_text(
+        self, selector: str, text: str, session_id: Optional[str] = None
+    ) -> ActionResult:
+        """Type *text* into an element matching *selector*."""
+        sid = self._sid(session_id)
         t0 = time.time()
         resp = await self.send_command({
             "cmd": "type",
@@ -227,66 +359,58 @@ class AsyncObscuraClient:
             "text": text,
         })
         elapsed = (time.time() - t0) * 1000.0
-        return ActionResult(action="type", success=resp.get("ok", False), payload=resp.get("result"), elapsed_ms=elapsed, error=resp.get("error"))
+        return ActionResult(
+            action="type",
+            success=resp.get("ok", False),
+            payload=resp.get("result"),
+            elapsed_ms=elapsed,
+            error=resp.get("error"),
+        )
 
     async def screenshot(self, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Takes a screenshot of the current page (returns base64 data)."""
-        sid = session_id or self.default_session_id
+        """Take a screenshot of the current page."""
         return await self.send_command({
             "cmd": "screenshot",
-            "session_id": sid,
+            "session_id": self._sid(session_id),
         })
 
-    async def title(self, session_id: Optional[str] = None) -> str:
-        """Gets the page title."""
-        sid = session_id or self.default_session_id
-        resp = await self.send_command({
+    async def title(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get the page title."""
+        return await self.send_command({
             "cmd": "title",
-            "session_id": sid,
+            "session_id": self._sid(session_id),
         })
-        if resp.get("ok") and resp.get("result"):
-            return resp["result"].get("title", "")
-        return ""
 
-    async def dump(self, format: str = "html", session_id: Optional[str] = None) -> str:
-        """Dumps the page content (html or text)."""
-        sid = session_id or self.default_session_id
-        resp = await self.send_command({
+    async def dump(
+        self, format: str = "html", session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Dump the page content in the given *format*."""
+        return await self.send_command({
             "cmd": "dump",
-            "session_id": sid,
+            "session_id": self._sid(session_id),
             "format": format,
         })
-        if resp.get("ok") and resp.get("result"):
-            return resp["result"].get("content", "")
-        return ""
 
-    async def close(self):
-        """Sends shutdown and cleans up the worker process."""
-        if self._proc:
-            try:
-                await self.send_command({"cmd": "shutdown"})
-            except Exception:
-                pass
-            if self._proc.stdin:
-                self._proc.stdin.close()
-            await self._proc.wait()
-            self._proc = None
 
+# ---------------------------------------------------------------------------
+# Sync wrapper
+# ---------------------------------------------------------------------------
 
 class ObscuraClient:
-    """Synchronous convenience wrapper around AsyncObscuraClient."""
-    """Synchronous convenience wrapper around AsyncObscuraClient.
+    """Synchronous convenience wrapper around :class:`AsyncObscuraClient`.
 
-    def __init__(self, binary_path: str = "obscura"):
-        self._async_client = AsyncObscuraClient(binary_path)
-    Usage:
+    Usage::
+
         with ObscuraClient() as client:
             client.create_session()
             result = client.navigate("https://example.com")
-            print(result)
     """
 
-    def __init__(self, binary_path: Optional[str] = None, session_id: Optional[str] = None):
+    def __init__(
+        self,
+        binary_path: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ):
         self._async_client = AsyncObscuraClient(binary_path, session_id)
 
     def __enter__(self):
@@ -296,29 +420,31 @@ class ObscuraClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         asyncio.run(self._async_client.close())
 
-    def navigate(self, url: str, wait_until: str = "load") -> ActionResult:
-        return asyncio.run(self._async_client.navigate(url, wait_until))
+    # -- forwarded methods ---------------------------------------------------
+
     def ping(self) -> Dict[str, Any]:
         return asyncio.run(self._async_client.ping())
 
-    def evaluate(self, expression: str) -> ActionResult:
-        return asyncio.run(self._async_client.evaluate(expression))
     def health(self) -> Dict[str, Any]:
         return asyncio.run(self._async_client.health())
 
-    def dump(self, format: str = "html") -> str:
-        return asyncio.run(self._async_client.dump(format))
-    def create_session(self, session_id: Optional[str] = None, config: Optional[SessionConfig] = None) -> Dict[str, Any]:
+    def create_session(
+        self, session_id: Optional[str] = None, config: Optional[SessionConfig] = None
+    ) -> Dict[str, Any]:
         return asyncio.run(self._async_client.create_session(session_id, config))
 
     def destroy_session(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.destroy_session(session_id))
 
-    def navigate(self, url: str, session_id: Optional[str] = None, wait_until: str = "load") -> ActionResult:
-        return asyncio.run(self._async_client.navigate(url, session_id=session_id, wait_until=wait_until))
+    def navigate(
+        self, url: str, session_id: Optional[str] = None, wait_until: str = "load", timeout_ms: Optional[int] = None
+    ) -> ActionResult:
+        return asyncio.run(self._async_client.navigate(url, session_id, wait_until, timeout_ms))
 
-    def evaluate(self, expression: str, session_id: Optional[str] = None) -> ActionResult:
-        return asyncio.run(self._async_client.evaluate(expression, session_id=session_id))
+    def evaluate(
+        self, expression: str, session_id: Optional[str] = None, await_promise: bool = True, timeout_ms: Optional[int] = None
+    ) -> ActionResult:
+        return asyncio.run(self._async_client.evaluate(expression, session_id, await_promise, timeout_ms))
 
     def snapshot(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.snapshot(session_id))
@@ -335,8 +461,8 @@ class ObscuraClient:
     def screenshot(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.screenshot(session_id))
 
-    def title(self, session_id: Optional[str] = None) -> str:
+    def title(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.title(session_id))
 
-    def dump(self, format: str = "html", session_id: Optional[str] = None) -> str:
+    def dump(self, format: str = "html", session_id: Optional[str] = None) -> Dict[str, Any]:
         return asyncio.run(self._async_client.dump(format, session_id))

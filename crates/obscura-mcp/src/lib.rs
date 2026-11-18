@@ -344,7 +344,7 @@ pub async fn run(proxy: Option<String>, user_agent: Option<String>, stealth: boo
     }
 }
 
-fn handle_initialize(id: Value, params: &Value) -> RpcResponse {
+pub(crate) fn handle_initialize(id: Value, params: &Value) -> RpcResponse {
     let _client_version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -366,7 +366,7 @@ fn handle_initialize(id: Value, params: &Value) -> RpcResponse {
     )
 }
 
-fn handle_tools_list(id: Value) -> RpcResponse {
+pub(crate) fn handle_tools_list(id: Value) -> RpcResponse {
     #[allow(unused_mut)]
     let mut tools = json!([
             {
@@ -755,8 +755,13 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "required": ["state"]
                 }
-            },
-            {
+            }
+    ]).as_array().cloned().expect("MCP tool list must be an array");
+
+    #[cfg(feature = "distributed")]
+    {
+        tools.extend([
+            json!({
                 "name": "obscura_submit_job",
                 "description": "Submit a distributed browser execution job through the control plane",
                 "inputSchema": {
@@ -767,8 +772,8 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "required": ["url"]
                 }
-            },
-            {
+            }),
+            json!({
                 "name": "obscura_get_job",
                 "description": "Get the status of a distributed browser execution job",
                 "inputSchema": {
@@ -778,8 +783,8 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "required": ["job_id"]
                 }
-            },
-            {
+            }),
+            json!({
                 "name": "obscura_cancel_job",
                 "description": "Cancel a distributed browser execution job",
                 "inputSchema": {
@@ -789,8 +794,8 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "required": ["job_id"]
                 }
-            },
-            {
+            }),
+            json!({
                 "name": "obscura_list_jobs",
                 "description": "List distributed browser execution jobs for the authenticated tenant",
                 "inputSchema": {
@@ -799,8 +804,8 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                         "limit": { "type": "number", "description": "Maximum number of jobs to return (default: 20)" }
                     }
                 }
-            },
-            {
+            }),
+            json!({
                 "name": "obscura_get_job_result",
                 "description": "Get the result of a completed distributed browser execution job",
                 "inputSchema": {
@@ -810,8 +815,9 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "required": ["job_id"]
                 }
-            }
-    ]).as_array().cloned().expect("MCP tool list must be an array");
+            }),
+        ]);
+    }
 
     #[cfg(feature = "render")]
     {
@@ -3764,6 +3770,60 @@ mod tests {
         assert!(tools
             .iter()
             .all(|tool| { tool["name"] != "browser_screenshot" && tool["name"] != "browser_pdf" }));
+    }
+
+    #[cfg(not(feature = "distributed"))]
+    #[test]
+    fn distributed_tools_are_not_advertised_without_distributed_feature() {
+        let tools = listed_tools();
+        let distributed_names = [
+            "obscura_submit_job",
+            "obscura_get_job",
+            "obscura_cancel_job",
+            "obscura_list_jobs",
+            "obscura_get_job_result",
+        ];
+        for name in distributed_names {
+            assert!(
+                tools.iter().all(|tool| tool["name"] != name),
+                "tool {name} must not be advertised without distributed feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "distributed")]
+    #[test]
+    fn distributed_tools_are_advertised_with_distributed_feature() {
+        let tools = listed_tools();
+        let distributed_names = [
+            "obscura_submit_job",
+            "obscura_get_job",
+            "obscura_cancel_job",
+            "obscura_list_jobs",
+            "obscura_get_job_result",
+        ];
+        for name in distributed_names {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == name),
+                "tool {name} must be advertised with distributed feature"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn every_advertised_tool_has_a_callable_handler() {
+        let tools = listed_tools();
+        let mut state = BrowserState::new(None, None, false);
+        for tool in tools {
+            let name = tool["name"].as_str().expect("tool name");
+            let response = handle_tool_call(json!(1), &json!({ "name": name, "arguments": {} }), &mut state).await;
+            let resp_val = serde_json::to_value(&response).expect("serialize response");
+            let text = resp_val["result"]["content"][0]["text"].as_str().unwrap_or("");
+            assert!(
+                !text.starts_with("Error: Unknown tool:"),
+                "advertised tool '{name}' has no registered handler arm in handle_tool_call: {text}"
+            );
+        }
     }
 
     #[tokio::test]

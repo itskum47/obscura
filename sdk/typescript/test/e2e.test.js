@@ -7,6 +7,8 @@ const { ObscuraClient } = require('../dist/index.js');
 function findBinary() {
   const root = path.resolve(__dirname, '..', '..', '..');
   const candidates = [
+    path.join(root, 'target', 'debug', 'obscura-worker'),
+    path.join(root, 'target', 'release', 'obscura-worker'),
     path.join(root, 'target', 'debug', 'obscura-runtime-worker'),
     path.join(root, 'target', 'release', 'obscura-runtime-worker'),
   ];
@@ -36,6 +38,18 @@ test('TS SDK E2E', { skip: !BIN }, async () => {
 
   const ev = await client.evaluate('1 + 2', sid);
   assert.strictEqual(ev.success, true);
+
+  // Verify concurrent requests & request correlation against real worker process
+  const concurrent = await Promise.all([
+    client.ping(),
+    client.health(),
+    client.ping(),
+    client.health(),
+  ]);
+  assert.strictEqual(concurrent.length, 4);
+  for (const res of concurrent) {
+    assert.strictEqual(res.ok, true);
+  }
 
   const destroyed = await client.destroySession(sid);
   assert.strictEqual(destroyed.ok, true);

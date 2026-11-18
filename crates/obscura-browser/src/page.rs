@@ -4639,6 +4639,25 @@ impl Page {
         }
     }
 
+    /// Evaluates an expression with a timeout, returning a Result. If the expression
+    /// times out or raises an error, an Err is returned instead of swallowing into Null.
+    pub fn try_evaluate_with_timeout(
+        &mut self,
+        expression: &str,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        if let Some(js) = &mut self.js {
+            js.evaluate_with_timeout(expression, timeout)
+        } else {
+            let val = self.evaluate(expression);
+            if val.is_null() {
+                Err("JavaScript runtime unavailable".to_string())
+            } else {
+                Ok(val)
+            }
+        }
+    }
+
     /// Like [`Self::evaluate`] but bounded by a V8 watchdog so a runaway
     /// expression cannot hang the process. A non-zero `timeout` of zero falls
     /// back to the unbounded path.
@@ -4755,7 +4774,12 @@ impl Page {
         await_timeout_ms: u64,
     ) -> Result<obscura_js::runtime::RemoteObjectInfo, String> {
         if let Some(js) = &mut self.js {
-            let evaluation = js.start_cdp_evaluation(expression, return_by_value, await_promise)?;
+            let evaluation = js.start_cdp_evaluation_with_timeout(
+                expression,
+                return_by_value,
+                await_promise,
+                std::time::Duration::from_millis(await_timeout_ms),
+            )?;
             self.await_cdp_evaluation(
                 evaluation,
                 return_by_value,

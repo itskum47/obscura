@@ -47,6 +47,9 @@ fn archive_version() -> Option<String> {
 /// tarball and minimal-image builds without git keep the bare version.
 fn local_version() -> String {
     let package = env::var("CARGO_PKG_VERSION").expect("Cargo sets CARGO_PKG_VERSION");
+    if package.contains("-rc") {
+        return package;
+    }
     let sha = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
