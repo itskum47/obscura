@@ -11,8 +11,10 @@ use std::sync::Arc;
 use anyhow::Result;
 #[cfg(feature = "render")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use obscura_agent::{BraveSearchProvider, ResearchOrchestrator, ResearchRequest};
 use obscura_browser::{BrowserContext, Page};
 use obscura_dom::NodeId;
+use obscura_extract;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -688,6 +690,38 @@ pub(crate) fn handle_tools_list(id: Value) -> RpcResponse {
                 }
             },
             {
+                "name": "research_web",
+                "description": "Autonomous web research: searches the web, fetches and extracts content from multiple sources, ranks by relevance, and aggregates findings with citations and contradiction detection. Requires BRAVE_API_KEY env var for live search (falls back to mock provider otherwise).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "objective": {
+                            "type": "string",
+                            "description": "Natural language research objective or query"
+                        },
+                        "max_sources": {
+                            "type": "integer",
+                            "description": "Maximum number of sources to consult (default 5)"
+                        }
+                    },
+                    "required": ["objective"]
+                }
+            },
+            {
+                "name": "fetch_url",
+                "description": "Fetch a URL and extract readable content, metadata, and structured data. Returns clean Markdown, page metadata, JSON-LD, tables, and links.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "URL to fetch and extract"
+                        }
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
                 "name": "browser_tab_new",
                 "description": "Open a new tab (isolated browser page). Returns the tab ID; subsequent tool calls operate on the most recently opened or browser_tab_switch'd tab.",
                 "inputSchema": {
@@ -919,6 +953,8 @@ async fn handle_tool_call(id: Value, params: &Value, state: &mut BrowserState) -
         "browser_get_attribute" => tool_get_attribute(args, state),
         "browser_count" => tool_count(args, state),
         "browser_extract" => tool_extract(args, state),
+        "research_web" => tool_research_web(args).await,
+        "fetch_url" => tool_fetch_url(args).await,
         "browser_tab_new" => tool_tab_new(args, state).await,
         "browser_tab_list" => tool_tab_list(state),
         "browser_tab_switch" => tool_tab_switch(args, state),
@@ -2478,6 +2514,87 @@ fn tool_extract(args: &Value, state: &mut BrowserState) -> Result<String, String
     );
     let res = evaluate_tool_script(state.page_mut(), &js)?;
     serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
+}
+
+async fn tool_research_web(args: &Value) -> Result<String, String> {
+    let objective = args
+        .get("objective")
+        .and_then(Value::as_str)
+        .ok_or("Missing objective parameter")?
+        .to_string();
+    let max_sources = args.get("max_sources").and_then(Value::as_u64).unwrap_or(5) as usize;
+
+    // Build search providers: Brave if API key available, else mock.
+    let mut providers: Vec<Box<dyn obscura_agent::SearchProvider>> = Vec::new();
+    if let Some(brave) = BraveSearchProvider::from_env() {
+        providers.push(Box::new(brave));
+    } else {
+        // Fall back to mock provider for demo/testing.
+        let mut mock = obscura_agent::MockSearchProvider::new();
+        mock.add_result(
+            "https://example.com",
+            "Example result",
+            "Fallback mock result (set BRAVE_API_KEY for live search)",
+        );
+        providers.push(Box::new(mock));
+    }
+
+    let orchestrator = ResearchOrchestrator::new(providers);
+    let request = ResearchRequest {
+        objective: objective.clone(),
+        max_sources,
+        domain_allowlist: None,
+        domain_denylist: None,
+        force_browser: false,
+    };
+
+    let outcome = orchestrator
+        .execute(&request)
+        .await
+        .map_err(|e| format!("Research failed: {e}"))?;
+
+    serde_json::to_string_pretty(&outcome).map_err(|e| e.to_string())
+}
+
+async fn tool_fetch_url(args: &Value) -> Result<String, String> {
+    let url_str = args
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("Missing url parameter")?;
+
+    let url = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {e}"))?;
+
+    let client = obscura_net::ObscuraHttpClient::new();
+    let resp = client
+        .fetch(&url)
+        .await
+        .map_err(|e| format!("Fetch failed: {e}"))?;
+
+    let body = resp.text();
+    let dom = obscura_dom::parse_html(&body);
+
+    let metadata = obscura_extract::extract_metadata(&dom);
+    let readability = obscura_extract::extract_readability(&dom, &obscura_extract::ReadabilityOptions::default());
+    let structured = obscura_extract::extract_structured_data(&dom);
+    let links = obscura_extract::extract_links(&dom, Some(url_str));
+    let tables = obscura_extract::extract_tables(&dom);
+
+    let result = serde_json::json!({
+        "url": url_str,
+        "metadata": metadata,
+        "readability": {
+            "title": readability.title,
+            "content_markdown": readability.content_markdown,
+            "content_text": readability.content_text,
+            "word_count": readability.word_count,
+            "reading_time_mins": readability.reading_time_mins,
+        },
+        "structured_data": structured,
+        "tables": tables,
+        "links": links,
+    });
+
+    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
 }
 
 async fn tool_tab_new(args: &Value, state: &mut BrowserState) -> Result<String, String> {

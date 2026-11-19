@@ -126,6 +126,113 @@ impl SearchProvider for MockSearchProvider {
     }
 }
 
+/// Brave Search API provider.
+///
+/// Requires the `BRAVE_API_KEY` environment variable. Uses the Brave Search
+/// Web Search API (https://api.search.brave.com/res/v1/web/search).
+pub struct BraveSearchProvider {
+    api_key: String,
+    client: reqwest::Client,
+}
+
+impl BraveSearchProvider {
+    pub fn from_env() -> Option<Self> {
+        let key = std::env::var("BRAVE_API_KEY").ok()?;
+        if key.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            api_key: key,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+        })
+    }
+
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl SearchProvider for BraveSearchProvider {
+    fn search<'a>(&'a self, query: &'a str, limit: usize) -> BoxFuture<'a, Result<Vec<DiscoveredSource>, DiscoveryError>> {
+        Box::pin(async move {
+            let resp = self
+                .client
+                .get("https://api.search.brave.com/res/v1/web/search")
+                .query(&[("q", query), ("count", &limit.min(20).to_string())])
+                .header("X-Subscription-Token", &self.api_key)
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|e| DiscoveryError::Network(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                return Err(DiscoveryError::Provider(format!(
+                    "Brave API returned {}",
+                    resp.status()
+                )));
+            }
+
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| DiscoveryError::Provider(e.to_string()))?;
+            let body: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| DiscoveryError::Provider(e.to_string()))?;
+
+            let mut results = Vec::new();
+            if let Some(web) = body.get("web").and_then(|w| w.get("results")) {
+                if let Some(arr) = web.as_array() {
+                    for item in arr {
+                        let url = item
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let title = item
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let snippet = item
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if url.is_empty() {
+                            continue;
+                        }
+                        let domain = url::Url::parse(&url)
+                            .ok()
+                            .and_then(|u| u.host_str().map(ToString::to_string))
+                            .unwrap_or_default();
+                        results.push(DiscoveredSource {
+                            url,
+                            title,
+                            snippet,
+                            domain,
+                            provider: "brave".to_string(),
+                        });
+                    }
+                }
+            }
+            Ok(results)
+        })
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "brave"
+    }
+}
+
 /// Normalizes URLs by removing tracking parameters and trailing slashes.
 pub struct UrlNormalizer;
 
