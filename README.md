@@ -166,7 +166,8 @@ flowchart TD
 
 - **Embedded JavaScript Engine:** Executes real-world JavaScript through Google V8 (`deno_core`) with standard ECMAScript semantics, microtask scheduling, and DOM event dispatching.
 - **Native Layout & Paint Engine:** Renders pages, captures screenshots, and exports PDFs without Chromium using a dedicated Rust layout tree (Block, Inline, Flexbox, Grid) and 2D rasterizer.
-- **AI Agent Automation (MCP):** Implements the Model Context Protocol (MCP) natively over `stdio` and `HTTP/SSE`, providing 41 purpose-built browser automation and extraction tools.
+- **AI Agent Automation (MCP):** Implements the Model Context Protocol (MCP) natively over `stdio` and `HTTP/SSE`, providing 41+ browser automation tools plus `research_web` (autonomous multi-source research with citations) and `fetch_url` (fetch + extract readable content, metadata, JSON-LD, tables, links).
+- **Autonomous Web Research:** Searches the web, fetches and extracts content from multiple sources, ranks by BM25 relevance, and aggregates findings with citations and contradiction detection — all from a self-hosted binary.
 - **CDP Server Compatibility:** Exposes Chrome DevTools Protocol WebSocket endpoints compatible with standard Puppeteer and Playwright automation scripts.
 - **Content Extraction:** Pure-Rust readability engine strips navigation, sidebars, and boilerplate. Extracts clean Markdown, metadata (OpenGraph, Twitter Cards, canonical URLs, author, published time), JSON-LD structured data (articles, products, FAQs), tables, and hyperlinks — no V8 overhead.
 - **High-Throughput Parallel Scraping:** Built-in multi-process worker pool (`obscura scrape`) designed to extract content across thousands of URLs concurrently with managed memory recycling.
