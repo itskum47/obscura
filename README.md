@@ -234,6 +234,26 @@ Claude (via Obscura MCP):
 
 Result: A cited research report with sources, claims, and contradictions —
 all from a self-hosted 4 MB binary. No Chromium. No cloud API. No tokens.
+
+**Example output (abbreviated):**
+```json
+{
+  "report": {
+    "objective": "rust programming language",
+    "executive_summary": "Synthesis across 3 consulted sources... Key consensus indicates: Rust is blazingly fast and memory-efficient...",
+    "verified_claims": [
+      { "statement": "Rust enforces memory safety without a garbage collector", "consensus_count": 2, "citations": [...] }
+    ],
+    "sources": [
+      { "url": "https://www.rust-lang.org/", "title": "Official site", "relevance_score": 0.92, "retrieval_method": "http" },
+      { "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)", "title": "Rust (programming language)", "relevance_score": 0.87, "retrieval_method": "http" }
+    ],
+    "contradictions": [],
+    "limitations": []
+  },
+  "http_retrieval_count": 3,
+  "elapsed_ms": 4200
+}
 ```
 
 **Try it yourself:**
