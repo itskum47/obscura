@@ -27,19 +27,42 @@ Obscura is an independent, lightweight browser engine written from scratch in Ru
 Unlike conventional headless automation tools that run and control an entire desktop Google Chrome or Chromium installation, Obscura embeds Google V8 directly alongside an independent native layout and rasterization engine. It provides unified automation interfaces without the operational overhead, memory consumption, or background telemetry of desktop browser suites.
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                          Unified Interfaces                            │
-│     CLI (`obscura`)   │   MCP Server (AI Agents)   │   CDP Server      │
-├────────────────────────────────────────────────────────────────────────┤
-│                           Obscura Engine                               │
-│  ┌──────────────────────┐  ┌─────────────────┐  ┌───────────────────┐  │
-│  │ Embedded V8 Runtime  │  │  Rust DOM & CSS │  │  Native Layout &  │  │
-│  │ (JS, Promises, DOM)  │  │  (html5ever)    │  │  Paint Engine     │  │
-│  └──────────────────────┘  └─────────────────┘  └───────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Security & Isolation Boundaries: SSRF Gate, Namespaces, Landlock │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+                          ┌─────────────────────────────┐
+                          │      Unified Interfaces      │
+                          └─────────────┬───────────────┘
+            ┌───────────────────────────┼───────────────────────────┐
+            │                           │                           │
+    ┌───────┴───────┐       ┌──────────┴──────────┐     ┌─────────┴─────────┐
+    │  CLI           │       │  MCP Server         │     │  CDP Server       │
+    │  obscura fetch │       │  (AI Agents)        │     │  (Puppeteer /     │
+    │  obscura serve │       │  41 browser tools   │     │   Playwright)     │
+    │  obscura mcp   │       │  stdio + HTTP/SSE   │     │  WebSocket        │
+    └───────┬───────┘       └──────────┬──────────┘     └─────────┬─────────┘
+            │                           │                           │
+            └───────────────────────────┼───────────────────────────┘
+                                        │
+                          ┌─────────────┴───────────────┐
+                          │       Obscura Engine         │
+                          └─────────────┬───────────────┘
+        ┌───────────────────────────────┼───────────────────────────────┐
+        │                               │                               │
+┌───────┴────────┐        ┌────────────┴────────────┐      ┌────────────┴──────────┐
+│  Embedded V8   │        │     Rust DOM & CSS       │      │  Native Layout &      │
+│  Runtime       │        │     (html5ever)          │      │  Paint Engine         │
+│  JS · Promises │        │  CSS selectors · Shadow  │      │  Taffy · tiny-skia    │
+│  DOM bindings  │        │  DOM · Serialization     │      │  PNG · PDF · Rects    │
+└───────┬────────┘        └────────────┬────────────┘      └────────────┬──────────┘
+        │                               │                               │
+        └───────────────────────────────┼───────────────────────────────┘
+                                        │
+        ┌───────────────────────────────┼───────────────────────────────┐
+        │                               │                               │
+┌───────┴────────┐        ┌────────────┴────────────┐      ┌────────────┴──────────┐
+│  Network Stack │        │  Content Extraction      │      │  Security & Isolation │
+│  reqwest/rustls│        │  Readability · JSON-LD   │      │  SSRF Gate · Landlock │
+│  Cookies · TLS │        │  Metadata · Tables · RSS │      │  Seccomp · Seatbelt   │
+│  Robots.txt    │        │  Links · Sitemaps        │      │  Namespaces · rlimit  │
+└────────────────┘        └─────────────────────────┘      └───────────────────────┘
 ```
 
 ### Key Capabilities
