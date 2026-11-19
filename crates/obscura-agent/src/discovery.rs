@@ -233,6 +233,116 @@ impl SearchProvider for BraveSearchProvider {
     }
 }
 
+/// DuckDuckGo HTML search provider (free, no API key required).
+///
+/// Scrapes DuckDuckGo's HTML results page. Fragile but free.
+pub struct DuckDuckGoSearchProvider {
+    client: reqwest::Client,
+}
+
+impl DuckDuckGoSearchProvider {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .user_agent("Mozilla/5.0 (compatible; ObscuraBot/1.0)")
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl SearchProvider for DuckDuckGoSearchProvider {
+    fn search<'a>(&'a self, query: &'a str, limit: usize) -> BoxFuture<'a, Result<Vec<DiscoveredSource>, DiscoveryError>> {
+        Box::pin(async move {
+            let resp = self
+                .client
+                .get("https://api.duckduckgo.com/")
+                .query(&[("q", query), ("format", "json"), ("no_html", "1"), ("skip_disambig", "1")])
+                .send()
+                .await
+                .map_err(|e| DiscoveryError::Network(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                return Err(DiscoveryError::Provider(format!(
+                    "DuckDuckGo returned {}",
+                    resp.status()
+                )));
+            }
+
+            let text = resp.text().await.map_err(|e| DiscoveryError::Provider(e.to_string()))?;
+            let body: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| DiscoveryError::Provider(e.to_string()))?;
+
+            let mut results = Vec::new();
+
+            // Extract from Results (direct URLs)
+            if let Some(arr) = body.get("Results").and_then(|v| v.as_array()) {
+                for item in arr {
+                    let url = item.get("FirstURL").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    let title = item.get("Text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    if url.is_empty() { continue; }
+                    let domain = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(ToString::to_string)).unwrap_or_default();
+                    results.push(DiscoveredSource {
+                        url,
+                        title,
+                        snippet: String::new(),
+                        domain,
+                        provider: "duckduckgo".to_string(),
+                    });
+                    if results.len() >= limit { break; }
+                }
+            }
+
+            // Extract Abstract URL (usually Wikipedia)
+            if results.len() < limit {
+                if let Some(url) = body.get("AbstractURL").and_then(|v| v.as_str()) {
+                    if !url.is_empty() {
+                        let title = body.get("Heading").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                        let snippet = body.get("Abstract").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                        let domain = url::Url::parse(url).ok().and_then(|u| u.host_str().map(ToString::to_string)).unwrap_or_default();
+                        results.push(DiscoveredSource {
+                            url: url.to_string(),
+                            title,
+                            snippet,
+                            domain,
+                            provider: "duckduckgo".to_string(),
+                        });
+                    }
+                }
+            }
+
+            // Extract from RelatedTopics (some have external URLs)
+            if results.len() < limit {
+                if let Some(topics) = body.get("RelatedTopics").and_then(|v| v.as_array()) {
+                    for item in topics {
+                        if results.len() >= limit { break; }
+                        if let Some(url) = item.get("FirstURL").and_then(|v| v.as_str()) {
+                            if url.is_empty() || url.contains("duckduckgo.com") { continue; }
+                            let title = item.get("Text").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                            let domain = url::Url::parse(url).ok().and_then(|u| u.host_str().map(ToString::to_string)).unwrap_or_default();
+                            results.push(DiscoveredSource {
+                                url: url.to_string(),
+                                title,
+                                snippet: String::new(),
+                                domain,
+                                provider: "duckduckgo".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            Ok(results)
+        })
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "duckduckgo"
+    }
+}
+
+
 /// Normalizes URLs by removing tracking parameters and trailing slashes.
 pub struct UrlNormalizer;
 
@@ -388,5 +498,23 @@ mod tests {
         assert_eq!(hits[0].url, "https://docs.example.org/guide");
         assert_eq!(hits[0].title, "Example Guide");
         assert_eq!(hits[0].domain, "docs.example.org");
+    }
+}
+
+#[cfg(test)]
+mod ddg_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_duckduckgo_search() {
+        let provider = DuckDuckGoSearchProvider::new();
+        let results = provider.search("rust programming language", 5).await.unwrap();
+        println!("Got {} results", results.len());
+        for r in &results { println!("  {} - {}", r.title, r.url); }
+        println!("Got {} results", results.len());
+        for r in &results {
+            println!("  {} - {}", r.title, r.url);
+        }
+        assert!(!results.is_empty(), "Should get at least one result");
     }
 }

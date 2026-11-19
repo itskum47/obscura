@@ -2540,6 +2540,7 @@ dependencies = [
  "obscura-extract",
  "obscura-net",
  "obscura-telemetry",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

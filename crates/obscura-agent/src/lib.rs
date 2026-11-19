@@ -11,8 +11,8 @@ pub use aggregator::{
     SynthesizedReport,
 };
 pub use discovery::{
-    BraveSearchProvider, DiscoveredSource, DiscoveryEngine, DiscoveryError, MockSearchProvider,
-    SearchProvider, UrlNormalizer,
+    BraveSearchProvider, DiscoveredSource, DiscoveryEngine, DiscoveryError,
+    DuckDuckGoSearchProvider, MockSearchProvider, SearchProvider, UrlNormalizer,
 };
 pub use orchestrator::{
     ResearchError, ResearchOrchestrator, ResearchOutcome, ResearchRequest,

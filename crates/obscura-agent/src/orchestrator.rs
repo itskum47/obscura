@@ -207,3 +207,29 @@ mod tests {
         assert_eq!(outcome.report.objective, "Rust performance");
     }
 }
+
+#[cfg(test)]
+mod e2e_research_test {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_research_rust() {
+        let providers: Vec<Box<dyn crate::discovery::SearchProvider>> = vec![
+            Box::new(crate::discovery::DuckDuckGoSearchProvider::new()),
+        ];
+        let orchestrator = ResearchOrchestrator::new(providers);
+        let req = ResearchRequest {
+            objective: "rust programming language".to_string(),
+            max_sources: 3,
+            domain_allowlist: None,
+            domain_denylist: None,
+            force_browser: false,
+        };
+        let outcome = orchestrator.execute(&req).await.unwrap();
+        println!("Report: {}", outcome.report.executive_summary);
+        println!("Sources: {}", outcome.report.sources.len());
+        println!("Claims: {}", outcome.report.verified_claims.len());
+        println!("HTTP retrievals: {}", outcome.http_retrieval_count);
+        assert!(!outcome.report.sources.is_empty(), "Should have sources");
+    }
+}

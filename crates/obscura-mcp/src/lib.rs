@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::Result;
 #[cfg(feature = "render")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use obscura_agent::{BraveSearchProvider, ResearchOrchestrator, ResearchRequest};
+use obscura_agent::{BraveSearchProvider, DuckDuckGoSearchProvider, ResearchOrchestrator, ResearchRequest};
 use obscura_browser::{BrowserContext, Page};
 use obscura_dom::NodeId;
 use obscura_extract;
@@ -691,7 +691,7 @@ pub(crate) fn handle_tools_list(id: Value) -> RpcResponse {
             },
             {
                 "name": "research_web",
-                "description": "Autonomous web research: searches the web, fetches and extracts content from multiple sources, ranks by relevance, and aggregates findings with citations and contradiction detection. Requires BRAVE_API_KEY env var for live search (falls back to mock provider otherwise).",
+                "description": "Autonomous web research: searches the web (DuckDuckGo by default, Brave if BRAVE_API_KEY set), fetches and extracts content from multiple sources, ranks by relevance, and aggregates findings with citations and contradiction detection.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2524,19 +2524,12 @@ async fn tool_research_web(args: &Value) -> Result<String, String> {
         .to_string();
     let max_sources = args.get("max_sources").and_then(Value::as_u64).unwrap_or(5) as usize;
 
-    // Build search providers: Brave if API key available, else mock.
+    // Build search providers: Brave if API key available, else DuckDuckGo (free, no key).
     let mut providers: Vec<Box<dyn obscura_agent::SearchProvider>> = Vec::new();
     if let Some(brave) = BraveSearchProvider::from_env() {
         providers.push(Box::new(brave));
     } else {
-        // Fall back to mock provider for demo/testing.
-        let mut mock = obscura_agent::MockSearchProvider::new();
-        mock.add_result(
-            "https://example.com",
-            "Example result",
-            "Fallback mock result (set BRAVE_API_KEY for live search)",
-        );
-        providers.push(Box::new(mock));
+        providers.push(Box::new(DuckDuckGoSearchProvider::new()));
     }
 
     let orchestrator = ResearchOrchestrator::new(providers);
