@@ -1,0 +1,12 @@
+# Obscura MCP Server — minimal image for AI agent integration
+FROM rust:1.82-slim-bookworm AS builder
+
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p obscura-cli 2>&1 | tail -5
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/obscura /usr/local/bin/obscura
+EXPOSE 8080
+ENTRYPOINT ["obscura", "mcp", "--transport", "http", "--port", "8080"]
