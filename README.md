@@ -47,6 +47,7 @@ Unlike conventional headless automation tools that run and control an entire des
 - **Native Layout & Paint Engine:** Renders pages, captures screenshots, and exports PDFs without Chromium using a dedicated Rust layout tree (Block, Inline, Flexbox, Grid) and 2D rasterizer.
 - **AI Agent Automation (MCP):** Implements the Model Context Protocol (MCP) natively over `stdio` and `HTTP` transports, providing 41 purpose-built automation and extraction tools.
 - **CDP Server Compatibility:** Exposes Chrome DevTools Protocol WebSocket endpoints compatible with standard Puppeteer and Playwright automation scripts.
+- **Content Extraction:** Pure-Rust readability engine strips navigation, sidebars, and boilerplate. Extracts clean Markdown, plain text, metadata (OpenGraph, Twitter Cards, canonical URLs, author, published time), JSON-LD structured data (articles, products, FAQs), tables, and hyperlinks — no V8 overhead.
 - **High-Throughput Parallel Scraping:** Built-in multi-process worker pool (`obscura scrape`) designed to extract content across thousands of URLs concurrently with managed memory recycling.
 - **Enterprise Isolation & Sandboxing:** Default SSRF protection against private networks, combined with Linux container isolation (namespaces, Landlock LSM, Seccomp-BPF) and macOS Seatbelt confinement.
 
