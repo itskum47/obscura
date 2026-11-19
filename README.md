@@ -10,10 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/itskum47/obscura"><img src="https://img.shields.io/github/stars/itskum47/obscura?style=for-the-badge&color=2b2b2b" alt="Stars" /></a>
-  <a href="https://github.com/itskum47/obscura/releases"><img src="https://img.shields.io/github/v/release/itskum47/obscura?style=for-the-badge&color=2b2b2b" alt="Release" /></a>
   <a href="https://github.com/itskum47/obscura/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-2b2b2b?style=for-the-badge" alt="License" /></a>
-  <a href="https://github.com/itskum47/obscura/actions"><img src="https://img.shields.io/github/actions/workflow/status/itskum47/obscura/ci.yml?style=for-the-badge&color=2b2b2b" alt="CI" /></a>
+  <a href="https://github.com/itskum47/obscura"><img src="https://img.shields.io/badge/Rust-2b2b2b?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" /></a>
+  <a href="https://github.com/itskum47/obscura"><img src="https://img.shields.io/badge/V8-Embedded-2b2b2b?style=for-the-badge" alt="V8" /></a>
 </p>
 
 ---
