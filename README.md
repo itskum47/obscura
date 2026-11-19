@@ -17,6 +17,14 @@
 
 ---
 
+<p align="center">
+  <img src="assets/demo.gif" alt="Obscura Demo" width="700" />
+  <br>
+  <em>30-second demo: Claude Desktop + Obscura MCP → autonomous web research with citations</em>
+</p>
+
+---
+
 ## What Is Obscura?
 
 Obscura is an independent, lightweight browser engine written from scratch in Rust. It embeds Google V8 directly alongside an independent native layout and rasterization engine — no Chromium, no WebDriver, no desktop browser overhead.
