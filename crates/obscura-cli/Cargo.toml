@@ -25,6 +25,7 @@ obscura-mcp = { workspace = true }
 obscura-cdp = { workspace = true }
 obscura-dom = { workspace = true }
 obscura-net = { workspace = true }
+obscura-extract = { workspace = true }
 obscura-js = { workspace = true }
 obscura-telemetry = { workspace = true }
 obscura-isolation = { workspace = true }

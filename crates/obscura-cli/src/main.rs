@@ -2004,6 +2004,22 @@ fn dump_text(page: &mut Page) -> String {
 }
 
 fn dump_markdown(page: &mut Page) -> String {
+    // Prefer the shared obscura-extract readability pipeline, which strips
+    // navigation, sidebars, and footer boilerplate and emits clean Markdown.
+    // Fall back to the in-page JS converter if extraction yields nothing.
+    let extracted = page.with_dom(|dom| {
+        let result = obscura_extract::extract_readability(dom, &obscura_extract::ReadabilityOptions::default());
+        if result.content_markdown.trim().is_empty() {
+            None
+        } else {
+            Some(result.content_markdown)
+        }
+    });
+    if let Some(md) = extracted.flatten() {
+        if !md.trim().is_empty() {
+            return md;
+        }
+    }
     let result = page.evaluate(obscura_browser::HTML_TO_MARKDOWN_JS);
     result.as_str().unwrap_or_default().to_string()
 }

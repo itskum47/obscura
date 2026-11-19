@@ -15,8 +15,6 @@ render = ["obscura-browser/render", "dep:base64"]
 obscura-browser = { workspace = true }
 obscura-dom = { workspace = true }
 obscura-net = { workspace = true }
-obscura-agent = { workspace = true }
-obscura-extract = { workspace = true }
 obscura-control-plane = { workspace = true, optional = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
