@@ -18,9 +18,9 @@
 ---
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Obscura Demo" width="700" />
+  <img src="assets/demo.svg" alt="Obscura Demo" width="700" />
   <br>
-  <em>30-second demo: Claude Desktop + Obscura MCP → autonomous web research with citations</em>
+  <em>Autonomous web research via MCP — search, fetch, extract, rank, aggregate, cite</em>
 </p>
 
 ---
@@ -279,6 +279,37 @@ curl -fsSL https://raw.githubusercontent.com/itskum47/obscura/main/install.sh | 
 # }
 
 # 3. Ask Claude: "Research the latest developments in Rust async runtimes"
+```
+
+**Terminal output (what actually happens):**
+```
+$ obscura mcp  (running as MCP server)
+
+[tool call] research_web({"objective": "rust async runtimes", "max_sources": 5})
+
+→ Searching DuckDuckGo for "rust async runtimes"...
+→ Found 5 sources: tokio.rs, areweasyncyet.rs, blog.rust-lang.org, ...
+→ Fetching & extracting content from each source...
+→ Ranking by BM25 relevance...
+→ Aggregating claims & detecting contradictions...
+
+Result: {
+  "report": {
+    "objective": "rust async runtimes",
+    "executive_summary": "Synthesis across 5 consulted sources. Key consensus: Tokio remains the dominant runtime for production Rust async code, offering a multi-threaded scheduler and ecosystem of utilities. async-std provides a std-like API. smol offers a minimal footprint...",
+    "sources": [
+      { "url": "https://tokio.rs/", "title": "Tokio", "relevance_score": 0.94, "retrieval_method": "http" },
+      { "url": "https://blog.rust-lang.org/...", "title": "Async in Rust", "relevance_score": 0.89, "retrieval_method": "http" }
+    ],
+    "verified_claims": [
+      { "statement": "Tokio provides a multi-threaded work-stealing scheduler", "consensus_count": 3, "citations": [...] }
+    ],
+    "contradictions": [],
+    "limitations": []
+  },
+  "http_retrieval_count": 5,
+  "elapsed_ms": 4800
+}
 ```
 
 ---
